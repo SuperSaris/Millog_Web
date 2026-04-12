@@ -20,7 +20,19 @@ import {
   IconLayersLinked,
   IconNote,
   IconAlertCircle,
+  IconPencil,
+  IconCheck,
+  IconX,
+  IconCar,
+  IconCoins,
 } from "@tabler/icons-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   TripRouteMap,
   extractLegs,
@@ -28,6 +40,7 @@ import {
   formatTime,
   tripDuration,
   formatKm,
+  MILERSATTNING_PER_KM,
   type TripRow,
   type TripTag,
 } from "./_shared";
@@ -64,6 +77,13 @@ export function TripDetailPage() {
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
+  // Local editable state — synced from trip after load
+  const [localTag, setLocalTag] = useState<TripTag | null>(null);
+  const [isSavingTag, setIsSavingTag] = useState(false);
+  const [noteEditing, setNoteEditing] = useState(false);
+  const [noteValue, setNoteValue] = useState("");
+  const [isSavingNote, setIsSavingNote] = useState(false);
+
   useEffect(() => {
     if (!id || !user) return;
     setLoading(true);
@@ -71,7 +91,7 @@ export function TripDetailPage() {
     supabase
       .from("trips")
       .select(
-        "id, started_at, ended_at, start_address, end_address, start_lat, start_lng, end_lat, end_lng, distance_km, energy_used_kwh, cost_kr, tag, soc_start, soc_end, outside_temp_c, notes, raw_drive_state"
+        "id, started_at, ended_at, start_address, end_address, start_lat, start_lng, end_lat, end_lng, distance_km, energy_used_kwh, cost_kr, tag, soc_start, soc_end, outside_temp_c, notes, raw_drive_state, odometer_start_km, odometer_end_km, tariff_kr_per_kwh_used, needs_review"
       )
       .eq("id", id)
       .eq("user_id", user.id)
@@ -90,8 +110,49 @@ export function TripDetailPage() {
     untagged: t("personal.tagUntagged"),
   };
 
+  // Sync local editable state when trip data loads
+  useEffect(() => {
+    if (trip) {
+      setLocalTag((trip.tag ?? "untagged") as TripTag);
+      setNoteValue(trip.notes ?? "");
+    }
+  }, [trip?.id]);
+
+  // Tag update — optimistic, reverts on error
+  async function handleTagChange(newTag: string) {
+    if (!trip || !user || newTag === localTag) return;
+    const prev = localTag;
+    setLocalTag(newTag as TripTag);
+    setIsSavingTag(true);
+    const { error } = await supabase
+      .from("trips")
+      .update({ tag: newTag })
+      .eq("id", trip.id)
+      .eq("user_id", user.id);
+    if (error) setLocalTag(prev);
+    else setTrip(t => t ? { ...t, tag: newTag as TripTag } : t);
+    setIsSavingTag(false);
+  }
+
+  // Note save
+  async function handleNoteSave() {
+    if (!trip || !user) return;
+    setIsSavingNote(true);
+    const trimmed = noteValue.trim();
+    const { error } = await supabase
+      .from("trips")
+      .update({ notes: trimmed || null })
+      .eq("id", trip.id)
+      .eq("user_id", user.id);
+    if (!error) {
+      setTrip(t => t ? { ...t, notes: trimmed || null } : t);
+      setNoteEditing(false);
+    }
+    setIsSavingNote(false);
+  }
+
   // useMemo must be called unconditionally — before any early returns
-  const { legs, gaps } = useMemo(
+  const { legs } = useMemo(
     () => (trip ? extractLegs(trip) : { legs: [], gaps: [] }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [trip?.id]
@@ -117,14 +178,31 @@ export function TripDetailPage() {
     );
   }
 
-  const tag = (trip.tag ?? "untagged") as TripTag;
-  const ts = getTagStyle(tag);
-  const tagLabel = tagLabels[tag] ?? trip.tag;
+  const currentTag = (localTag ?? trip.tag ?? "untagged") as TripTag;
+  const ts = getTagStyle(currentTag);
   const duration = tripDuration(trip.started_at, trip.ended_at);
   const efficiency =
     trip.energy_used_kwh && trip.distance_km && trip.distance_km > 0
       ? Math.round((trip.energy_used_kwh / trip.distance_km) * 100)
       : null;
+  const avgSpeedKmh =
+    trip.distance_km && trip.ended_at
+      ? Math.round(
+          trip.distance_km /
+            ((new Date(trip.ended_at).getTime() - new Date(trip.started_at).getTime()) / 3_600_000)
+        )
+      : null;
+  const milersattning =
+    (currentTag === "work" || currentTag === "commute") && trip.distance_km
+      ? trip.distance_km * MILERSATTNING_PER_KM
+      : null;
+
+  const tagOptions: Array<{ key: TripTag; label: string }> = [
+    { key: "work",     label: tagLabels.work },
+    { key: "commute",  label: tagLabels.commute },
+    { key: "personal", label: tagLabels.personal },
+    { key: "untagged", label: tagLabels.untagged },
+  ];
 
   // ── Reusable atoms ────────────────────────────────────────
   const StatItem = ({
@@ -144,12 +222,10 @@ export function TripDetailPage() {
   );
 
   const SectionLabel = ({ title }: { title: string }) => (
-    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 pt-4 pb-1.5 first:pt-0">
+    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 pt-5 pb-2 first:pt-0">
       {title}
     </p>
   );
-
-  const legColors = ["#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ef4444"];
 
   return (
     <div className="space-y-4">
@@ -166,9 +242,31 @@ export function TripDetailPage() {
         </Button>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap mb-1.5">
-            <Badge className={`border text-xs ${ts.pill}`} variant="outline">
-              {tagLabel}
-            </Badge>
+            <Select
+              value={currentTag}
+              onValueChange={handleTagChange}
+              disabled={isSavingTag}
+            >
+              <SelectTrigger
+                className={`h-auto py-0.5 px-2.5 rounded-full text-xs font-medium border w-auto gap-1.5 shadow-none focus:ring-0 ${ts.pill}`}
+              >
+                <SelectValue />
+                {isSavingTag && <span className="text-[10px] opacity-50 ml-1">...</span>}
+              </SelectTrigger>
+              <SelectContent>
+                {tagOptions.map(({ key, label }) => {
+                  const s = getTagStyle(key);
+                  return (
+                    <SelectItem key={key} value={key} className="text-sm">
+                      <div className="flex items-center gap-2">
+                        <span className={`w-2 h-2 rounded-full inline-block ${s.dot}`} />
+                        {label}
+                      </div>
+                    </SelectItem>
+                  );
+                })}
+              </SelectContent>
+            </Select>
             {isMerged && (
               <Badge
                 variant="outline"
@@ -207,29 +305,46 @@ export function TripDetailPage() {
 
           {/* ① Rutt */}
           <SectionLabel title="Rutt" />
-          <div className="flex items-start gap-2 mb-1">
-            <div className="flex flex-col items-center gap-1 shrink-0 mt-1">
+          <div className="flex items-start gap-2.5">
+            <div className="flex flex-col items-center shrink-0 mt-1">
               <span className="w-2.5 h-2.5 rounded-full bg-green-500 block" />
-              <span className="w-px flex-1 bg-border block h-4" />
+              <span className="w-px bg-border block flex-1" style={{ minHeight: 24 }} />
               <span className="w-2.5 h-2.5 rounded-full bg-red-500 block" />
             </div>
-            <div className="min-w-0 flex flex-col gap-1.5">
-              <p className="text-sm leading-tight truncate font-medium">
-                {trip.start_address ?? "—"}
-              </p>
-              <p className="text-sm leading-tight truncate text-muted-foreground">
-                {trip.end_address ?? "—"}
-              </p>
+            <div className="min-w-0 flex flex-col gap-3">
+              <div className="min-w-0">
+                <p className="text-sm leading-snug font-medium truncate">
+                  {trip.start_address ?? "—"}
+                </p>
+                {trip.odometer_start_km != null && (
+                  <p className="text-xs text-muted-foreground mt-0.5 tabular-nums">
+                    {Math.round(trip.odometer_start_km).toLocaleString("sv-SE")} km
+                  </p>
+                )}
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm leading-snug text-muted-foreground truncate">
+                  {trip.end_address ?? "—"}
+                </p>
+                {trip.odometer_end_km != null && (
+                  <p className="text-xs text-muted-foreground mt-0.5 tabular-nums">
+                    {Math.round(trip.odometer_end_km).toLocaleString("sv-SE")} km
+                  </p>
+                )}
+              </div>
             </div>
           </div>
 
           {/* ② Tid & distans */}
           <SectionLabel title="Tid & distans" />
           <div className="grid grid-cols-2 gap-x-3 gap-y-3">
-            <StatItem icon={IconClock} label="Avresetid"  value={formatTime(trip.started_at)} />
-            <StatItem icon={IconClock} label="Ankomsttid" value={trip.ended_at ? formatTime(trip.ended_at) : "—"} />
-            <StatItem icon={IconRoute} label="Distans"    value={formatKm(trip.distance_km)} />
-            <StatItem icon={IconClock} label="Restid"     value={duration || "—"} />
+            <StatItem icon={IconClock} label="Avresetid"     value={formatTime(trip.started_at)} />
+            <StatItem icon={IconClock} label="Ankomsttid"    value={trip.ended_at ? formatTime(trip.ended_at) : "—"} />
+            <StatItem icon={IconRoute} label="Distans"       value={formatKm(trip.distance_km)} />
+            <StatItem icon={IconClock} label="Restid"        value={duration || "—"} />
+            {avgSpeedKmh != null && (
+              <StatItem icon={IconCar} label="Medelhastighet" value={`${avgSpeedKmh} km/h`} />
+            )}
           </div>
 
           {/* ③ Energi & kostnad */}
@@ -246,8 +361,36 @@ export function TripDetailPage() {
                 {efficiency != null && (
                   <StatItem icon={IconGauge} label="Förbrukning" value={`${efficiency} Wh/km`} />
                 )}
-              </div>
+              </div>              {trip.tariff_kr_per_kwh_used != null && (
+                <p className="text-[10px] text-muted-foreground/60 mt-2">
+                  Beräknat med {trip.tariff_kr_per_kwh_used.toFixed(2)} kr/kWh
+                </p>
+              )}
             </>
+          )}
+
+          {/* ③b Milersättning — only for work/commute trips */}
+          {milersattning != null && (
+            <>
+              <SectionLabel title="Milersättning" />
+              <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-7 h-7 rounded-md bg-emerald-100 flex items-center justify-center shrink-0">
+                      <IconCoins className="h-3.5 w-3.5 text-emerald-600" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium text-emerald-800">Underlag för milersättning</p>
+                      <p className="text-[10px] text-emerald-600/80">
+                        {formatKm(trip.distance_km)} × {MILERSATTNING_PER_KM} kr/km
+                      </p>
+                    </div>
+                  </div>
+                  <span className="text-lg font-bold text-emerald-700 tabular-nums shrink-0">
+                    {milersattning.toFixed(2)} kr
+                  </span>
+                </div>
+              </div>            </>
           )}
 
           {/* ④ Batteri */}
@@ -255,28 +398,32 @@ export function TripDetailPage() {
             <>
               <SectionLabel title="Batteri" />
               <div className="p-3 rounded-xl bg-muted/50 border">
-                <div className="flex items-center gap-2 mb-2">
+                <div className="flex items-center gap-2 mb-3">
                   <IconBatteryCharging className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                   <span className="text-xs text-muted-foreground">SOC under resa</span>
-                  <span className="ml-auto text-xs text-rose-500 font-medium">
-                    −{trip.soc_start - trip.soc_end}%
+                  <span className="ml-auto text-xs text-muted-foreground font-medium">
+                    −{Math.round(trip.soc_start - trip.soc_end)}%
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-bold w-8 text-right">{trip.soc_start}%</span>
+                  <span className="text-sm font-bold w-10 shrink-0 text-right tabular-nums">
+                    {Math.round(trip.soc_start)}%
+                  </span>
                   <div className="relative flex-1 h-3 rounded-full bg-background overflow-hidden border">
                     <div
                       className="absolute inset-0 rounded-full bg-green-200"
-                      style={{ width: `${trip.soc_start}%` }}
+                      style={{ width: `${Math.round(trip.soc_start)}%` }}
                     />
                     <div
                       className="absolute inset-0 rounded-full bg-green-500"
-                      style={{ width: `${trip.soc_end}%` }}
+                      style={{ width: `${Math.round(trip.soc_end)}%` }}
                     />
                   </div>
-                  <span className="text-sm font-bold w-8 text-muted-foreground">{trip.soc_end}%</span>
+                  <span className="text-sm font-bold w-10 shrink-0 text-muted-foreground tabular-nums">
+                    {Math.round(trip.soc_end)}%
+                  </span>
                 </div>
-                <div className="flex justify-between mt-1">
+                <div className="flex justify-between mt-1.5">
                   <span className="text-[10px] text-muted-foreground">Start</span>
                   <span className="text-[10px] text-muted-foreground">Slut</span>
                 </div>
@@ -288,123 +435,73 @@ export function TripDetailPage() {
           {trip.outside_temp_c != null && (
             <>
               <SectionLabel title="Förhållanden" />
-              <div className="flex flex-wrap gap-2">
-                <div className="flex items-center gap-1.5 text-xs border rounded-full px-2.5 py-1 bg-muted/40">
-                  <IconTemperature className="h-3.5 w-3.5 text-muted-foreground" />
-                  <span>{trip.outside_temp_c.toFixed(1)} °C</span>
-                </div>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-3">
+                <StatItem icon={IconTemperature} label="Temperatur" value={`${trip.outside_temp_c.toFixed(1)} °C`} />
               </div>
             </>
           )}
 
           {/* ⑥ Anteckning */}
-          {trip.notes && (
-            <>
-              <SectionLabel title="Anteckning" />
+          <>
+            <div className="flex items-center justify-between pt-5 pb-2 first:pt-0">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">Anteckning</p>
+              {!noteEditing && (
+                <button
+                  onClick={() => setNoteEditing(true)}
+                  className="text-muted-foreground/50 hover:text-muted-foreground transition-colors p-0.5 rounded"
+                  title={trip.notes ? "Redigera anteckning" : "Lägg till anteckning"}
+                >
+                  <IconPencil className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+            {noteEditing ? (
+              <div className="space-y-2">
+                <textarea
+                  className="w-full text-sm border rounded-lg p-2.5 bg-background resize-none focus:outline-none focus:ring-1 focus:ring-ring min-h-20"
+                  value={noteValue}
+                  onChange={e => setNoteValue(e.target.value)}
+                  placeholder="Skriv en anteckning..."
+                  autoFocus
+                />
+                <div className="flex gap-2">
+                  <Button size="sm" onClick={handleNoteSave} disabled={isSavingNote}>
+                    <IconCheck className="h-3.5 w-3.5 mr-1" />
+                    {isSavingNote ? "Sparar..." : "Spara"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => { setNoteEditing(false); setNoteValue(trip.notes ?? ""); }}
+                    disabled={isSavingNote}
+                  >
+                    <IconX className="h-3.5 w-3.5 mr-1" />Avbryt
+                  </Button>
+                </div>
+              </div>
+            ) : trip.notes ? (
               <div className="flex items-start gap-2">
                 <IconNote className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
                 <p className="text-sm text-muted-foreground leading-relaxed italic">{trip.notes}</p>
               </div>
-            </>
-          )}
+            ) : (
+              <button
+                onClick={() => setNoteEditing(true)}
+                className="text-xs text-muted-foreground/50 hover:text-muted-foreground transition-colors flex items-center gap-1.5"
+              >
+                <IconPencil className="h-3.5 w-3.5" />
+                Lägg till anteckning
+              </button>
+            )}
+          </>
 
-          {/* ⑦ Etapper */}
-          {isMerged && (
-            <>
-              <SectionLabel title={`Etapper (${legs.length})`} />
-              <div className="space-y-0">
-                {legs.map((leg, i) => {
-                  const legDuration =
-                    leg.startedAt && leg.endedAt
-                      ? Math.round(
-                          (new Date(leg.endedAt).getTime() -
-                            new Date(leg.startedAt).getTime()) /
-                            60_000
-                        )
-                      : null;
-                  const legEfficiency =
-                    leg.energyKwh != null &&
-                    leg.distanceKm != null &&
-                    leg.distanceKm > 0
-                      ? Math.round((leg.energyKwh / leg.distanceKm) * 100)
-                      : null;
-                  const gap = gaps[i];
-                  const isLast = i === legs.length - 1;
-                  const dotColor = legColors[i % legColors.length]!;
-                  const legTagStyle = getTagStyle(leg.tag);
-
-                  return (
-                    <div key={i}>
-                      <div className="relative pl-5">
-                        {!isLast && (
-                          <div className="absolute left-1.5 top-6 bottom-0 w-px bg-border" />
-                        )}
-                        <div
-                          className="absolute left-0 top-3 w-3.5 h-3.5 rounded-full border-2 border-background shadow-sm"
-                          style={{ background: dotColor }}
-                        />
-                        <div className="pb-1 pt-2">
-                          <div className="flex items-center gap-1.5 mb-0.5">
-                            <span className="text-xs font-semibold">Etapp {i + 1}</span>
-                            <Badge
-                              variant="outline"
-                              className={`text-[10px] px-1.5 py-0 h-4 border ${legTagStyle.pill}`}
-                            >
-                              {tagLabels[leg.tag as TripTag] ?? leg.tag}
-                            </Badge>
-                          </div>
-                          {leg.startAddress && (
-                            <p className="text-xs text-muted-foreground truncate">
-                              {leg.startAddress.split(",")[0]}
-                              {leg.endAddress
-                                ? ` → ${leg.endAddress.split(",")[0]}`
-                                : ""}
-                            </p>
-                          )}
-                          <div className="flex flex-wrap gap-x-3 gap-y-0 mt-0.5">
-                            {leg.distanceKm != null && (
-                              <span className="text-xs text-muted-foreground">
-                                {formatKm(leg.distanceKm)}
-                              </span>
-                            )}
-                            {legDuration != null && (
-                              <span className="text-xs text-muted-foreground">
-                                {legDuration < 60
-                                  ? `${legDuration} min`
-                                  : `${Math.floor(legDuration / 60)} h ${legDuration % 60} min`}
-                              </span>
-                            )}
-                            {legEfficiency != null && (
-                              <span className="text-xs text-muted-foreground">
-                                {legEfficiency} Wh/km
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
-                      {gap && !isLast && (
-                        <div className="relative pl-5 py-0.5">
-                          <div className="absolute left-1.5 top-0 bottom-0 w-px bg-border" />
-                          <div className="absolute left-0.75 top-1/2 -translate-y-1/2 w-2 h-2 bg-amber-400 rotate-45" />
-                          <p className="text-[10px] text-muted-foreground/70 italic pl-1">
-                            Stopp
-                            {gap.durationMin != null ? ` · ${gap.durationMin} min` : ""}
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
+          {/* ⑦ Etapper are shown as an overlay panel on the map itself — see TripRouteMap */}
         </div>
 
         {/* ── RIGHT: map ── order-1 on mobile (shows above stats) */}
         <div
-          className="flex-1 order-1 lg:order-2 flex flex-col rounded-xl overflow-hidden border"
-          style={{ minHeight: "min(70vh, 680px)" }}
+          className="flex-1 order-1 lg:order-2"
+          style={{ minHeight: "max(65vh, 520px)" }}
         >
           <TripRouteMap trip={trip} />
         </div>

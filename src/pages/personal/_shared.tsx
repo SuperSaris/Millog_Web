@@ -1,6 +1,14 @@
 // _shared.tsx — reusable types, constants, helpers, and trip components for personal section
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useTranslation } from "react-i18next";
+import { useAuth } from "@/contexts/auth-context";
+import { supabase } from "@/lib/supabase";
+import { Input } from "@/components/ui/input";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { format } from "date-fns";
+import { sv } from "date-fns/locale";
+import type { DateRange } from "react-day-picker";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -39,6 +47,11 @@ import {
   IconTrendingUp,
   IconFileExport,
   IconLayersLinked,
+  IconSearch,
+  IconNote,
+  IconX,
+  IconChevronDown,
+  IconFocusCentered,
 } from "@tabler/icons-react";
 import {
   XAxis,
@@ -61,6 +74,8 @@ L.Icon.Default.mergeOptions({
 
 // ── Types ────────────────────────────────────────────────────
 export type TripTag = "work" | "commute" | "personal" | "untagged";
+export type CustomTag = { id: string; name: string; color: string; is_work_tag: boolean };
+export type CustomRange = { from: Date; to: Date };
 
 export type TripRow = {
   id: string;
@@ -75,12 +90,17 @@ export type TripRow = {
   distance_km: number | null;
   energy_used_kwh: number | null;
   cost_kr: number | null;
-  tag: TripTag;
+  tag: string;
   soc_start: number | null;
   soc_end: number | null;
   outside_temp_c: number | null;
   notes: string | null;
   raw_drive_state: Record<string, unknown> | null;
+  // Telemetry columns
+  odometer_start_km: number | null;
+  odometer_end_km: number | null;
+  tariff_kr_per_kwh_used: number | null;
+  needs_review: boolean;
 };
 
 export type Period = "week" | "month" | "quarter" | "year";
@@ -323,7 +343,7 @@ export function extractLegs(trip: TripRow): {
 }
 
 // ── Map auto-fit ─────────────────────────────────────────────
-export function MapBounds({ points }: { points: LatLng[] }) {
+export function MapBounds({ points, resetKey = 0 }: { points: LatLng[]; resetKey?: number }) {
   const map = useMap();
   useEffect(() => {
     if (points.length >= 2) {
@@ -332,7 +352,18 @@ export function MapBounds({ points }: { points: LatLng[] }) {
       const pt = points[0]!;
       map.setView([pt.lat, pt.lng], 14);
     }
-  }, [points, map]);
+  // resetKey intentionally included so a "fit to route" button can re-trigger the fit
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resetKey, map]);
+  return null;
+}
+
+// Centers the map on a moving point (used for follow-playhead mode)
+function MapFollower({ point }: { point: LatLng | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (point) map.setView([point.lat, point.lng], map.getZoom(), { animate: true, duration: 0.4 });
+  }, [point, map]);
   return null;
 }
 
@@ -392,6 +423,11 @@ type PlaySpeed = 0.5 | 1 | 2;
 const SPEED_LABELS: Record<PlaySpeed, string> = { 0.5: "0.5×", 1: "1×", 2: "2×" };
 const BASE_INTERVAL_MS = 60; // at 1×
 
+const LEG_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ef4444"] as const;
+const LEG_TAG_LABELS: Record<string, string> = {
+  work: "Arbete", commute: "Pendling", personal: "Privat", untagged: "Omärkt",
+};
+
 export function TripRouteMap({ trip }: { trip: TripRow }) {
   const { legs, gaps, allPoints } = useMemo(() => extractLegs(trip), [trip.id]);
   const hasRoute = allPoints.length >= 2;
@@ -402,6 +438,12 @@ export function TripRouteMap({ trip }: { trip: TripRow }) {
   const [playing, setPlaying] = useState(false);
   const [playIdx, setPlayIdx] = useState(0);
   const [speed, setSpeed] = useState<PlaySpeed>(1);
+  // followPlayhead: when true the map pans to keep the playhead centered
+  const [followPlayhead, setFollowPlayhead] = useState(false);
+  // showLegsPanel: overlay list of legs on the map (only relevant when isMerged)
+  const [showLegsPanel, setShowLegsPanel] = useState(true);
+  // resetViewKey: bump this to trigger MapBounds to re-fit the full route
+  const [resetViewKey, setResetViewKey] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const STEP = Math.max(1, Math.floor(allPoints.length / 120));
   const scrubBarRef = useRef<HTMLDivElement>(null);
@@ -420,6 +462,7 @@ export function TripRouteMap({ trip }: { trip: TripRow }) {
     setPlaying(false);
     clearTick();
     setPlayIdx(allPoints.length - 1);
+    setFollowPlayhead(false);
   }, [allPoints.length, clearTick]);
 
   useEffect(() => {
@@ -481,147 +524,280 @@ export function TripRouteMap({ trip }: { trip: TripRow }) {
     );
   }
 
+  // The map fills its container fully. All controls are absolute overlays inside it.
   return (
-    <div className="flex-1 flex flex-col gap-2 min-h-0">
-      {/* Map canvas */}
-      <div className="flex-1 rounded-xl overflow-hidden border relative" style={{ minHeight: 300 }}>
-        <MapContainer
-          center={startPt ? [startPt.lat, startPt.lng] : [59.3, 18.0]}
-          zoom={13}
-          zoomControl={false}
-          style={{ height: "100%", width: "100%" }}
-          attributionControl={false}
-        >
-          <TileLayer
-            url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-            attribution='&copy; <a href="https://carto.com/">CARTO</a>'
+    <div
+      className="relative rounded-xl overflow-hidden border"
+      style={{ height: "100%", minHeight: 520 }}
+    >
+      <MapContainer
+        center={startPt ? [startPt.lat, startPt.lng] : [59.3, 18.0]}
+        zoom={13}
+        zoomControl={false}
+        style={{ height: "100%", width: "100%" }}
+        attributionControl={false}
+      >
+        <TileLayer
+          url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+          attribution='&copy; <a href="https://carto.com/">CARTO</a>'
+        />
+        <MapBounds points={hasRoute ? allPoints : mapPoints} resetKey={resetViewKey} />
+        {/* Follow mode: pan map to keep playhead in frame */}
+        <MapFollower point={followPlayhead ? playhead : null} />
+
+        {/* Drawn (played) route */}
+        {hasRoute && (
+          <Polyline
+            positions={drawnPoints.map(p => [p.lat, p.lng])}
+            pathOptions={{ color: "#3b82f6", weight: 3, opacity: 0.85 }}
           />
-          <MapBounds points={hasRoute ? allPoints : mapPoints} />
+        )}
+        {/* Remaining route (ghost) */}
+        {hasRoute && playing && playIdx < allPoints.length - 1 && (
+          <Polyline
+            positions={allPoints.slice(playIdx).map(p => [p.lat, p.lng])}
+            pathOptions={{ color: "#94a3b8", weight: 2, opacity: 0.35, dashArray: "4 4" }}
+          />
+        )}
 
-          {/* Drawn (played) route */}
-          {hasRoute && (
-            <Polyline
-              positions={drawnPoints.map(p => [p.lat, p.lng])}
-              pathOptions={{ color: "#3b82f6", weight: 3, opacity: 0.85 }}
-            />
-          )}
-          {/* Remaining route (ghost) */}
-          {hasRoute && playing && playIdx < allPoints.length - 1 && (
-            <Polyline
-              positions={allPoints.slice(playIdx).map(p => [p.lat, p.lng])}
-              pathOptions={{ color: "#94a3b8", weight: 2, opacity: 0.35, dashArray: "4 4" }}
-            />
-          )}
+        {startPt && <Marker position={[startPt.lat, startPt.lng]} icon={startIcon} />}
+        {endPt && (!playing || playIdx >= allPoints.length - 1) && (
+          <Marker position={[endPt.lat, endPt.lng]} icon={endIcon} />
+        )}
+        {playhead && playing && (
+          <Marker position={[playhead.lat, playhead.lng]} icon={playheadIcon} />
+        )}
+        {pauseMarkers.map((pt, i) => (
+          <Marker key={`pause-${i}`} position={[pt.lat, pt.lng]} icon={legStopIcon} />
+        ))}
+      </MapContainer>
 
-          {startPt && <Marker position={[startPt.lat, startPt.lng]} icon={startIcon} />}
-          {endPt && (!playing || playIdx >= allPoints.length - 1) && (
-            <Marker position={[endPt.lat, endPt.lng]} icon={endIcon} />
-          )}
-          {playhead && playing && (
-            <Marker position={[playhead.lat, playhead.lng]} icon={playheadIcon} />
-          )}
-          {/* Leg stop markers (diamond) — shown always on merged trips */}
-          {pauseMarkers.map((pt, i) => (
-            <Marker key={`pause-${i}`} position={[pt.lat, pt.lng]} icon={legStopIcon} />
-          ))}
-        </MapContainer>
+      {/* ── TOP-RIGHT: map action buttons ── */}
+      <div className="absolute top-3 right-3 z-1000 flex flex-col gap-1.5">
+        {/* Fit-to-route */}
+        <button
+          className="w-8 h-8 rounded-lg bg-white/90 backdrop-blur-sm border shadow-sm flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+          onClick={() => { setResetViewKey(k => k + 1); setFollowPlayhead(false); }}
+          title="Zooma till rutten"
+        >
+          <IconRoute className="h-4 w-4" />
+        </button>
+        {/* Follow playhead toggle */}
+        {hasRoute && (
+          <button
+            className={`w-8 h-8 rounded-lg backdrop-blur-sm border shadow-sm flex items-center justify-center transition-colors ${
+              followPlayhead
+                ? "bg-blue-500 border-blue-500 text-white"
+                : "bg-white/90 text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => setFollowPlayhead(f => !f)}
+            title={followPlayhead ? "Sluta följa" : "Följ position"}
+          >
+            <IconFocusCentered className="h-4 w-4" />
+          </button>
+        )}
+        {/* Show/hide etapper panel */}
+        {isMerged && (
+          <button
+            className={`w-8 h-8 rounded-lg backdrop-blur-sm border shadow-sm flex items-center justify-center transition-colors ${
+              showLegsPanel
+                ? "bg-slate-800 border-slate-800 text-white"
+                : "bg-white/90 text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => setShowLegsPanel(s => !s)}
+            title={showLegsPanel ? "Dölj etapper" : "Visa etapper"}
+          >
+            <IconLayersLinked className="h-4 w-4" />
+          </button>
+        )}
+      </div>
 
-        {/* Legend */}
-        <div className="absolute bottom-3 left-3 flex items-center gap-2 bg-white/90 backdrop-blur-sm border rounded-lg px-2.5 py-1.5 shadow-sm pointer-events-none">
+      {/* ── LEFT: etapper overlay — like Tesla nav waypoint list ── */}
+      {isMerged && showLegsPanel && (
+        <div
+          className="absolute top-3 left-3 z-1000 w-56 flex flex-col bg-white/95 backdrop-blur-md border rounded-xl shadow-lg overflow-hidden"
+          style={{ maxHeight: "calc(100% - 96px)" }}
+        >
+          <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
+            <div className="flex items-center gap-1.5">
+              <IconLayersLinked className="h-3.5 w-3.5 text-muted-foreground" />
+              <span className="text-xs font-semibold">Etapper ({legs.length})</span>
+            </div>
+            <button
+              className="text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded"
+              onClick={() => setShowLegsPanel(false)}
+            >
+              <IconX className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div className="overflow-y-auto overflow-x-hidden overscroll-contain">
+            {legs.map((leg, i) => {
+              const dotColor = LEG_COLORS[i % LEG_COLORS.length]!;
+              const legDuration =
+                leg.startedAt && leg.endedAt
+                  ? Math.round(
+                      (new Date(leg.endedAt).getTime() - new Date(leg.startedAt).getTime()) / 60_000
+                    )
+                  : null;
+              const gap = gaps[i];
+              const isLast = i === legs.length - 1;
+              const legTs = getTagStyle(leg.tag);
+              return (
+                <div key={i}>
+                  <div className="px-3 py-2 min-w-0">
+                    <div className="flex items-center gap-1.5 mb-0.5 min-w-0">
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: dotColor }} />
+                      <span className="text-xs font-semibold">Etapp {i + 1}</span>
+                      <span className={`text-[10px] px-1.5 py-0 rounded-full border ml-auto shrink-0 ${legTs.pill}`}>
+                        {LEG_TAG_LABELS[leg.tag] ?? leg.tag}
+                      </span>
+                    </div>
+                    {leg.startAddress && (
+                      <p className="text-[11px] text-muted-foreground leading-snug mt-0.5 truncate pl-3.5">
+                        {leg.startAddress.split(",")[0]}
+                        {leg.endAddress ? ` \u2192 ${leg.endAddress.split(",")[0]}` : ""}
+                      </p>
+                    )}
+                    <div className="flex items-center gap-2 mt-0.5 pl-3.5 flex-wrap overflow-hidden">
+                      {leg.distanceKm != null && (
+                        <span className="text-[11px] text-muted-foreground">{formatKm(leg.distanceKm)}</span>
+                      )}
+                      {legDuration != null && (
+                        <span className="text-[11px] text-muted-foreground">
+                          {legDuration < 60
+                            ? `${legDuration} min`
+                            : `${Math.floor(legDuration / 60)} h ${legDuration % 60} min`}
+                        </span>
+                      )}
+                      {leg.socStart != null && leg.socEnd != null && (
+                        <span className="text-[11px] text-muted-foreground tabular-nums">
+                          {`${Math.round(leg.socStart)}% → ${Math.round(leg.socEnd)}%`}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {gap && !isLast && (
+                    <div className="flex items-center gap-1.5 px-3 py-1 bg-amber-50 border-y border-amber-100">
+                      <span className="w-2 h-2 bg-amber-400 rotate-45 shrink-0" />
+                      <span className="text-[10px] text-amber-700">
+                        Stopp{gap.durationMin != null ? ` \u00b7 ${gap.durationMin} min` : ""}
+                      </span>
+                    </div>
+                  )}
+                  {!isLast && !gap && <Separator className="mx-3" />}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── BOTTOM: playback + scrubber overlay ── */}
+      {hasRoute && (
+        <div className="absolute bottom-0 left-0 right-0 z-1000">
+          <div className="bg-linear-to-t from-white/95 via-white/85 to-transparent pt-8 px-3 pb-3 space-y-2">
+            {/* Legend + speed on same row */}
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-3 pointer-events-none">
+                <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <span className="inline-block w-2.5 h-2.5 rounded-full bg-green-500" />Start
+                </span>
+                <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <span className="inline-block w-2.5 h-2.5 rounded-full bg-red-500" />Slut
+                </span>
+                {isMerged && (
+                  <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <span className="inline-block w-2.5 h-2.5 bg-amber-400 rotate-45" />Stopp
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1 select-none">
+                {([0.5, 1, 2] as PlaySpeed[]).map(s => (
+                  <button
+                    key={s}
+                    onClick={() => setSpeed(s)}
+                    className={`text-xs px-2 py-0.5 rounded border transition-colors ${
+                      speed === s
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "border-border bg-white/80 text-muted-foreground hover:border-foreground"
+                    }`}
+                  >
+                    {SPEED_LABELS[s]}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {/* Scrubber */}
+            <div
+              ref={scrubBarRef}
+              className="relative h-2 rounded-full overflow-hidden cursor-pointer bg-muted/70"
+              onClick={handleScrubClick}
+              title="Klicka för att hoppa till position"
+            >
+              {isMerged && legBoundaries.length > 1
+                ? legBoundaries.slice(0, -1).map((start, i) => {
+                    const end = legBoundaries[i + 1]!;
+                    const total = allPoints.length;
+                    const left = (start / total) * 100;
+                    const width = ((end - start) / total) * 100;
+                    const col = LEG_COLORS[i % LEG_COLORS.length]!;
+                    const gapAfter = i < legs.length - 1;
+                    return (
+                      <div
+                        key={i}
+                        className="absolute top-0 h-full"
+                        style={{ left: `${left}%`, width: `${width - (gapAfter ? 0.5 : 0)}%`, background: col, opacity: 0.4 }}
+                      />
+                    );
+                  })
+                : null}
+              <div
+                className="absolute top-0 left-0 h-full bg-blue-500 transition-none"
+                style={{ width: `${progress * 100}%`, opacity: 0.85 }}
+              />
+              <div
+                className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-white border-2 border-blue-500 shadow pointer-events-none"
+                style={{ left: `calc(${progress * 100}% - 6px)` }}
+              />
+            </div>
+            {/* Play controls */}
+            <div className="flex items-center gap-2">
+              {!playing ? (
+                <Button
+                  size="sm"
+                  onClick={playIdx > 0 && playIdx < allPoints.length - 1 ? resumePlay : startPlay}
+                  className="gap-1.5 h-7 text-xs"
+                >
+                  <IconPlayerPlay className="h-3.5 w-3.5" />
+                  {playIdx > 0 && playIdx < allPoints.length - 1 ? "Fortsätt" : "Spela rutt"}
+                </Button>
+              ) : (
+                <Button size="sm" variant="outline" onClick={pausePlay} className="gap-1.5 h-7 text-xs bg-white/80">
+                  <IconPlayerPause className="h-3.5 w-3.5" />Paus
+                </Button>
+              )}
+              {playing && (
+                <Button size="sm" variant="ghost" onClick={stopPlay} className="gap-1.5 h-7 text-xs text-muted-foreground">
+                  <IconPlayerStop className="h-3.5 w-3.5" />
+                </Button>
+              )}
+              <span className="text-xs text-muted-foreground ml-auto">
+                {allPoints.length} punkter{isMerged ? ` \u00b7 ${legs.length} etapper` : ""}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Static legend when no route playback available */}
+      {!hasRoute && (
+        <div className="absolute bottom-3 left-3 z-1000 flex items-center gap-2 bg-white/90 backdrop-blur-sm border rounded-lg px-2.5 py-1.5 shadow-sm pointer-events-none">
           <span className="flex items-center gap-1 text-xs text-muted-foreground">
             <span className="inline-block w-2.5 h-2.5 rounded-full bg-green-500" />Start
           </span>
           <span className="flex items-center gap-1 text-xs text-muted-foreground">
             <span className="inline-block w-2.5 h-2.5 rounded-full bg-red-500" />Slut
           </span>
-          {isMerged && (
-            <span className="flex items-center gap-1 text-xs text-muted-foreground">
-              <span className="inline-block w-2.5 h-2.5 bg-amber-400 rotate-45" />Stopp
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Playback controls + scrubber */}
-      {hasRoute && (
-        <div className="space-y-1.5">
-          {/* Timeline scrubber with per-leg segments */}
-          <div
-            ref={scrubBarRef}
-            className="relative h-2 rounded-full overflow-hidden cursor-pointer bg-muted"
-            onClick={handleScrubClick}
-            title="Klicka för att hoppa till position"
-          >
-            {isMerged && legBoundaries.length > 1 ? (
-              /* Coloured segments per leg */
-              legBoundaries.slice(0, -1).map((start, i) => {
-                const end = legBoundaries[i + 1]!;
-                const total = allPoints.length;
-                const left = (start / total) * 100;
-                const width = ((end - start) / total) * 100;
-                const legColors = ["#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ef4444"];
-                const col = legColors[i % legColors.length]!;
-                const gapAfter = i < legs.length - 1;
-                return (
-                  <div
-                    key={i}
-                    className="absolute top-0 h-full"
-                    style={{ left: `${left}%`, width: `${width - (gapAfter ? 0.5 : 0)}%`, background: col, opacity: 0.4 }}
-                  />
-                );
-              })
-            ) : null}
-            {/* Played portion overlay */}
-            <div
-              className="absolute top-0 left-0 h-full bg-blue-500 transition-none"
-              style={{ width: `${progress * 100}%`, opacity: 0.85 }}
-            />
-            {/* Scrub handle */}
-            <div
-              className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-white border-2 border-blue-500 shadow pointer-events-none"
-              style={{ left: `calc(${progress * 100}% - 6px)` }}
-            />
-          </div>
-
-          {/* Buttons row */}
-          <div className="flex items-center gap-2">
-            {!playing ? (
-              <Button size="sm" onClick={playIdx > 0 && playIdx < allPoints.length - 1 ? resumePlay : startPlay} className="gap-1.5">
-                <IconPlayerPlay className="h-3.5 w-3.5" />
-                {playIdx > 0 && playIdx < allPoints.length - 1 ? "Fortsätt" : "Spela rutt"}
-              </Button>
-            ) : (
-              <Button size="sm" variant="outline" onClick={pausePlay} className="gap-1.5">
-                <IconPlayerPause className="h-3.5 w-3.5" />Paus
-              </Button>
-            )}
-            {playing && (
-              <Button size="sm" variant="ghost" onClick={stopPlay} className="gap-1.5 text-muted-foreground">
-                <IconPlayerStop className="h-3.5 w-3.5" />
-              </Button>
-            )}
-
-            {/* Speed selector */}
-            <div className="flex items-center gap-1 ml-1 select-none">
-              {([0.5, 1, 2] as PlaySpeed[]).map(s => (
-                <button
-                  key={s}
-                  onClick={() => setSpeed(s)}
-                  className={`text-xs px-2 py-0.5 rounded border transition-colors ${
-                    speed === s
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "border-border text-muted-foreground hover:border-foreground"
-                  }`}
-                >
-                  {SPEED_LABELS[s]}
-                </button>
-              ))}
-            </div>
-
-            <span className="text-xs text-muted-foreground ml-auto">
-              {allPoints.length} koordinater{isMerged ? ` · ${legs.length} etapper` : ""}
-            </span>
-          </div>
         </div>
       )}
     </div>
@@ -897,21 +1073,186 @@ export function PeriodSelect({ value, onChange }: { value: Period; onChange: (p:
   );
 }
 
+// ── PeriodCalendarPicker ─────────────────────────────────────
+const PERIOD_PRESETS: { value: Period; label: string }[] = [
+  { value: "week",    label: "Vecka" },
+  { value: "month",   label: "Månad" },
+  { value: "quarter", label: "Kvartal" },
+  { value: "year",    label: "År" },
+];
+
+export function PeriodCalendarPicker({
+  value, onChange, customRange, onCustomRangeChange,
+}: {
+  value: Period;
+  onChange: (p: Period) => void;
+  customRange: CustomRange | null;
+  onCustomRangeChange: (r: CustomRange | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [calRange, setCalRange] = useState<DateRange | undefined>(
+    customRange ? { from: customRange.from, to: customRange.to } : undefined
+  );
+
+  function selectPreset(p: Period) {
+    onChange(p);
+    onCustomRangeChange(null);
+    setCalRange(undefined);
+    setOpen(false);
+  }
+
+  function handleCalSelect(range: DateRange | undefined) {
+    setCalRange(range);
+    if (range?.from && range?.to) {
+      onCustomRangeChange({ from: range.from, to: range.to });
+      setOpen(false);
+    }
+  }
+
+  const triggerLabel = customRange
+    ? `${format(customRange.from, "d MMM", { locale: sv })} – ${format(customRange.to, "d MMM", { locale: sv })}`
+    : PERIOD_PRESETS.find(p => p.value === value)?.label ?? "Period";
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm" className="h-8 text-sm font-normal gap-1.5">
+          <IconCalendar className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          {triggerLabel}
+          <IconChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-auto p-0" align="start">
+        {/* Quick presets */}
+        <div className="flex gap-1 p-3 pb-2 border-b">
+          {PERIOD_PRESETS.map(p => (
+            <Button
+              key={p.value}
+              variant={!customRange && value === p.value ? "default" : "ghost"}
+              size="sm"
+              className="h-7 text-xs px-3"
+              onClick={() => selectPreset(p.value)}
+            >
+              {p.label}
+            </Button>
+          ))}
+        </div>
+        {/* Calendar range picker */}
+        <Calendar
+          mode="range"
+          selected={calRange}
+          onSelect={handleCalSelect}
+          locale={sv}
+          numberOfMonths={1}
+          disabled={{ after: new Date() }}
+        />
+        {/* Clear custom range */}
+        {customRange && (
+          <div className="p-2 pt-0 border-t flex justify-end">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs text-muted-foreground"
+              onClick={() => { onCustomRangeChange(null); setCalRange(undefined); setOpen(false); }}
+            >
+              Rensa val
+            </Button>
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 // ── TripsTab ─────────────────────────────────────────────────
-export function TripsTab({ trips, loading, period, onPeriodChange, onSelect }: {
+const SYSTEM_TAGS: TripTag[] = ["work", "commute", "personal", "untagged"];
+const SYSTEM_TAG_COLORS: Record<string, string> = {
+  work: "#3b82f6", commute: "#f59e0b", personal: "#10b981", untagged: "#9ca3af",
+};
+
+export function TripsTab({
+  trips: initialTrips, loading, loadingMore, hasMore, onLoadMore,
+  periodTotals, period, onPeriodChange, onSelect,
+  customTags = [], customRange, onCustomRangeChange,
+}: {
   trips: TripRow[]; loading: boolean; period: Period;
+  loadingMore?: boolean;
+  hasMore?: boolean;
+  onLoadMore?: () => void;
+  periodTotals?: { count: number; km: number; kr: number } | null;
   onPeriodChange: (p: Period) => void; onSelect: (t: TripRow) => void;
+  customTags?: CustomTag[];
+  customRange: CustomRange | null;
+  onCustomRangeChange: (r: CustomRange | null) => void;
 }) {
   const { t } = useTranslation();
+  const { user } = useAuth();
   const [tagFilter, setTagFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [tagOverrides, setTagOverrides] = useState<Record<string, string>>({});
 
-  const tagLabels: Record<TripTag, string> = {
-    work: t("personal.tagWork"), commute: t("personal.tagCommute"),
-    personal: t("personal.tagPersonal"), untagged: t("personal.tagUntagged"),
-  };
+  // Reset overrides when trips list refreshes
+  useEffect(() => { setTagOverrides({}); }, [initialTrips]);
+
+  // System + custom tags unified list
+  const allTagDefs = useMemo(() => [
+    ...SYSTEM_TAGS.map(name => ({
+      name,
+      label: { work: t("personal.tagWork"), commute: t("personal.tagCommute"), personal: t("personal.tagPersonal"), untagged: t("personal.tagUntagged") }[name] ?? name,
+      color: SYSTEM_TAG_COLORS[name] ?? "#9ca3af",
+    })),
+    ...customTags.map(ct => ({ name: ct.name, label: ct.name, color: ct.color })),
+  ], [customTags, t]);
+
+  const knownTagNames = useMemo(() => new Set(allTagDefs.map(d => d.name)), [allTagDefs]);
+
+  const getTagColor = useCallback(
+    (name: string) => allTagDefs.find(d => d.name === name)?.color ?? SYSTEM_TAG_COLORS.untagged,
+    [allTagDefs]
+  );
+
+  const resolveTag = useCallback(
+    (trip: TripRow) => {
+      const raw = tagOverrides[trip.id] ?? trip.tag;
+      return knownTagNames.has(raw) ? raw : "untagged";
+    },
+    [tagOverrides, knownTagNames]
+  );
+
+  // Optimistic tag save
+  async function handleTagChange(tripId: string, newTag: string, prevTag: string) {
+    if (!user) return;
+    setTagOverrides(prev => ({ ...prev, [tripId]: newTag }));
+    const { error } = await supabase
+      .from("trips")
+      .update({ tag: newTag })
+      .eq("id", tripId)
+      .eq("user_id", user.id);
+    if (error) setTagOverrides(prev => ({ ...prev, [tripId]: prevTag }));
+  }
+
+  const trips = useMemo(() =>
+    initialTrips.map(tr => tagOverrides[tr.id] ? { ...tr, tag: tagOverrides[tr.id]! } : tr),
+  [initialTrips, tagOverrides]);
+
+  const untaggedCount = useMemo(() =>
+    trips.filter(tr => tr.tag === "untagged" || !knownTagNames.has(tr.tag)).length,
+  [trips, knownTagNames]);
+
+  const q = search.trim().toLowerCase();
 
   const groups = useMemo(() => {
-    const filtered = tagFilter === "all" ? trips : trips.filter(tr => tr.tag === tagFilter);
+    let filtered = tagFilter === "all" ? trips : trips.filter(tr => {
+      const eff = knownTagNames.has(tr.tag) ? tr.tag : "untagged";
+      return eff === tagFilter;
+    });
+    if (q) {
+      filtered = filtered.filter(tr =>
+        (tr.start_address ?? "").toLowerCase().includes(q) ||
+        (tr.end_address   ?? "").toLowerCase().includes(q) ||
+        (tr.notes         ?? "").toLowerCase().includes(q)
+      );
+    }
     const m = new Map<string, TripRow[]>();
     for (const trip of filtered) {
       const key = trip.started_at.slice(0, 10);
@@ -926,23 +1267,87 @@ export function TripsTab({ trips, loading, period, onPeriodChange, onSelect }: {
         trips: dayTrips.sort((a, b) => b.started_at.localeCompare(a.started_at)),
         totalKm: dayTrips.reduce((s, tr) => s + (tr.distance_km ?? 0), 0),
       }));
-  }, [trips, tagFilter]);
+  }, [trips, tagFilter, q, knownTagNames]);
+
+  // When periodTotals is provided (from a server aggregate query) and no local search is active,
+  // use the authoritative server count/km/kr — these cover ALL trips in the period, not just the
+  // loaded page. Fall back to client-sum when searching (server totals don't reflect the search).
+  const summaryDisplay = useMemo(() => {
+    if (periodTotals && !q) {
+      return { count: periodTotals.count, km: periodTotals.km, kr: periodTotals.kr, partial: false };
+    }
+    const all = groups.flatMap(g => g.trips);
+    return {
+      count: all.length,
+      km: all.reduce((s, tr) => s + (tr.distance_km ?? 0), 0),
+      kr: all.reduce((s, tr) => s + (tr.cost_kr ?? 0), 0),
+      partial: !!hasMore && !q,
+    };
+  }, [periodTotals, q, groups, hasMore]);
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-3 flex-wrap">
-        <PeriodSelect value={period} onChange={onPeriodChange} />
+    <div className="space-y-3">
+      {/* ── Filter bar ── */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <PeriodCalendarPicker
+          value={period}
+          onChange={onPeriodChange}
+          customRange={customRange}
+          onCustomRangeChange={onCustomRangeChange}
+        />
         <Select value={tagFilter} onValueChange={setTagFilter}>
-          <SelectTrigger className="w-36 h-8 text-sm"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="w-40 h-8 text-sm"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">{t("personal.filterAll")}</SelectItem>
-            <SelectItem value="work">{t("personal.tagWork")}</SelectItem>
-            <SelectItem value="commute">{t("personal.tagCommute")}</SelectItem>
-            <SelectItem value="personal">{t("personal.tagPersonal")}</SelectItem>
-            <SelectItem value="untagged">{t("personal.tagUntagged")}</SelectItem>
+            <SelectItem value="all">
+              <span className="flex items-center gap-2">
+                {t("personal.filterAll")}
+                {untaggedCount > 0 && (
+                  <span className="ml-auto text-[10px] font-semibold bg-amber-100 text-amber-700 rounded-full px-1.5 py-0">{untaggedCount}</span>
+                )}
+              </span>
+            </SelectItem>
+            {allTagDefs.map(td => (
+              <SelectItem key={td.name} value={td.name}>
+                <span className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: td.color }} />
+                  {td.label}
+                  {td.name === "untagged" && untaggedCount > 0 && (
+                    <span className="ml-auto text-[10px] font-semibold bg-amber-100 text-amber-700 rounded-full px-1.5 py-0">{untaggedCount}</span>
+                  )}
+                </span>
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
+        {/* Search */}
+        <div className="relative flex-1 min-w-40">
+          <IconSearch className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+          <Input
+            className="h-8 pl-8 pr-7 text-sm"
+            placeholder="Sök adress eller anteckning…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+          {search && (
+            <button
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+              onClick={() => setSearch("")}
+            >
+              <IconX className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* ── Summary bar ── */}
+      {!loading && trips.length > 0 && (
+        <p className="text-xs text-muted-foreground/70 tabular-nums">
+          {summaryDisplay.partial && <span title="Visar första sidan — ladda fler för exakt antal">~</span>}
+          {summaryDisplay.count} {summaryDisplay.count === 1 ? "resa" : "resor"}
+          {" · "}{formatKm(summaryDisplay.km)}
+          {summaryDisplay.kr > 0 && <> · {Math.round(summaryDisplay.kr)} kr</>}
+        </p>
+      )}
 
       {loading ? (
         <div className="space-y-2">
@@ -953,7 +1358,9 @@ export function TripsTab({ trips, loading, period, onPeriodChange, onSelect }: {
           <div className="w-14 h-14 rounded-2xl bg-muted flex items-center justify-center mb-3">
             <IconRoute className="h-7 w-7 text-muted-foreground/40" />
           </div>
-          <p className="text-sm text-muted-foreground">{t("personal.noTrips")}</p>
+          <p className="text-sm text-muted-foreground">
+            {q ? `Inga resor matchar "${search}"` : t("personal.noTrips")}
+          </p>
         </div>
       ) : (
         <div className="space-y-6">
@@ -969,46 +1376,85 @@ export function TripsTab({ trips, loading, period, onPeriodChange, onSelect }: {
               </div>
               <div className="rounded-xl border overflow-hidden">
                 {group.trips.map(trip => {
-                  const tag = (trip.tag ?? "untagged") as TripTag;
-                  const ts = getTagStyle(tag);
+                  const eff = resolveTag(trip);
+                  const tagColor = getTagColor(eff);
                   const cost = formatSek(trip.cost_kr);
                   const dur = tripDuration(trip.started_at, trip.ended_at);
                   return (
-                    <button
+                    <div
                       key={trip.id}
-                      onClick={() => onSelect(trip)}
-                      className={`w-full flex items-center gap-3 px-4 py-3.5 hover:bg-muted/50 transition-colors text-left border-l-[3px] ${ts.line} border-b last:border-b-0 group`}
+                      className="flex items-center gap-3 px-4 py-3.5 border-b last:border-b-0 hover:bg-muted/40 transition-colors group"
+                      style={{ borderLeftWidth: 3, borderLeftStyle: "solid", borderLeftColor: tagColor }}
                     >
-                      <div className="flex-1 min-w-0">
+                      <button className="flex-1 min-w-0 text-left" onClick={() => onSelect(trip)}>
                         <div className="flex items-center gap-1.5 text-sm font-medium leading-tight mb-1">
-                          <span className="truncate max-w-40 text-foreground">{trip.start_address?.split(",")[0] ?? "Okänd"}</span>
+                          <span className="truncate max-w-36 text-foreground">{trip.start_address?.split(",")[0] ?? "Okänd"}</span>
                           <IconArrowNarrowRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                          <span className="truncate max-w-40 text-foreground">{trip.end_address?.split(",")[0] ?? "Okänd"}</span>
+                          <span className="truncate max-w-36 text-foreground">{trip.end_address?.split(",")[0] ?? "Okänd"}</span>
+                          {trip.notes && <IconNote className="h-3 w-3 shrink-0 text-muted-foreground/50 ml-0.5" title={trip.notes} />}
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-muted-foreground">
                             {formatTime(trip.started_at)}{trip.ended_at ? ` – ${formatTime(trip.ended_at)}` : ""}
                           </span>
                           {dur && <span className="text-xs text-muted-foreground">· {dur}</span>}
-                          <Badge className={`text-xs border h-4 px-1.5 ${ts.pill}`} variant="outline">
-                            {tagLabels[tag] ?? tag}
-                          </Badge>
                         </div>
+                      </button>
+
+                      {/* Inline quick-tag select */}
+                      <div className="shrink-0" onClick={e => e.stopPropagation()}>
+                        <Select value={eff} onValueChange={v => handleTagChange(trip.id, v, eff)}>
+                          <SelectTrigger
+                            className="h-auto py-0.5 px-2 text-[11px] font-medium border rounded-full shadow-none focus:ring-0 w-auto gap-1"
+                            style={{
+                              backgroundColor: tagColor + "20",
+                              borderColor: tagColor + "60",
+                              color: tagColor,
+                            }}
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {allTagDefs.map(td => (
+                              <SelectItem key={td.name} value={td.name} className="text-sm">
+                                <div className="flex items-center gap-2">
+                                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: td.color }} />
+                                  {td.label}
+                                </div>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </div>
-                      <div className="text-right shrink-0">
+
+                      {/* Metrics */}
+                      <button className="text-right shrink-0" onClick={() => onSelect(trip)}>
                         <p className="text-sm font-semibold tabular-nums">{formatKm(trip.distance_km)}</p>
                         {cost && <p className="text-xs text-muted-foreground tabular-nums">{cost}</p>}
                         {trip.energy_used_kwh != null && (
                           <p className="text-xs text-blue-500 tabular-nums">{trip.energy_used_kwh.toFixed(1)} kWh</p>
                         )}
-                      </div>
-                      <IconChevronRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-                    </button>
+                      </button>
+                      <IconChevronRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" onClick={() => onSelect(trip)} />
+                    </div>
                   );
                 })}
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* ── Load more ── */}
+      {!loading && hasMore && (
+        <div className="flex justify-center pt-2 pb-4">
+          <button
+            className="text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+            onClick={onLoadMore}
+            disabled={loadingMore}
+          >
+            {loadingMore ? "Laddar…" : "Ladda fler resor"}
+          </button>
         </div>
       )}
     </div>

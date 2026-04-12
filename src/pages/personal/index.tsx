@@ -886,15 +886,16 @@ export function PersonalDashboardPage() {
     Promise.all([
       supabase
         .from("trips")
-        .select("id, started_at, ended_at, start_address, end_address, start_lat, start_lng, end_lat, end_lng, distance_km, energy_used_kwh, cost_kr, tag, soc_start, soc_end, outside_temp_c, notes, raw_drive_state")
+        // 30 days × ~10 trips/day max ≈ 300 rows; raw_drive_state excluded (chart only needs metrics)
+        .select("id, started_at, ended_at, start_address, end_address, start_lat, start_lng, end_lat, end_lng, distance_km, energy_used_kwh, cost_kr, tag, soc_start, soc_end, outside_temp_c, notes")
         .eq("user_id", user.id)
         .is("superseded_by", null)
         .gte("started_at", rangeStart)
         .order("started_at", { ascending: true })
-        .limit(500),
+        .limit(300),
       supabase
         .from("trips")
-        .select("id, started_at, ended_at, start_address, end_address, start_lat, start_lng, end_lat, end_lng, distance_km, energy_used_kwh, cost_kr, tag, soc_start, soc_end, outside_temp_c, notes, raw_drive_state")
+        .select("id, started_at, ended_at, start_address, end_address, start_lat, start_lng, end_lat, end_lng, distance_km, energy_used_kwh, cost_kr, tag, soc_start, soc_end, outside_temp_c, notes")
         .eq("user_id", user.id)
         .is("superseded_by", null)
         .order("started_at", { ascending: false })
