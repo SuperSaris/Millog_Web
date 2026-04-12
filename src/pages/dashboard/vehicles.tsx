@@ -1,5 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useTranslation } from "react-i18next";
 
 function VehicleCardSkeleton() {
   return (
@@ -23,15 +24,16 @@ function VehicleCardSkeleton() {
 }
 
 export function VehiclesPage() {
+  const { t } = useTranslation();
   // TODO: Replace with real data from useVehicles hook
   const loading = false;
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Fordon</h1>
+        <h1 className="text-2xl font-bold tracking-tight">{t("vehicles.title")}</h1>
         <p className="text-muted-foreground">
-          Översikt över alla Tesla-fordon i organisationen.
+          {t("vehicles.description")}
         </p>
       </div>
 
@@ -44,10 +46,10 @@ export function VehiclesPage() {
       ) : (
         <Card>
           <CardHeader>
-            <CardTitle>Fordon</CardTitle>
+            <CardTitle>{t("vehicles.title")}</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-muted-foreground">Inga fordon kopplade ännu.</p>
+            <p className="text-muted-foreground">{t("vehicles.noVehicles")}</p>
           </CardContent>
         </Card>
       )}

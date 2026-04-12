@@ -1,5 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useTranslation } from "react-i18next";
 
 function ComplianceTableSkeleton({ rows = 5 }: { rows?: number }) {
   return (
@@ -23,27 +24,28 @@ function ComplianceTableSkeleton({ rows = 5 }: { rows?: number }) {
 }
 
 export function CompliancePage() {
+  const { t } = useTranslation();
   // TODO: Replace with real data from useCompliance hook
   const loading = false;
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Efterlevnad</h1>
+        <h1 className="text-2xl font-bold tracking-tight">{t("compliance.title")}</h1>
         <p className="text-muted-foreground">
-          Se vilka förare som har otaggade resor och skicka påminnelser.
+          {t("compliance.description")}
         </p>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Otaggade resor</CardTitle>
+          <CardTitle>{t("compliance.untaggedTrips")}</CardTitle>
         </CardHeader>
         <CardContent>
           {loading ? (
             <ComplianceTableSkeleton />
           ) : (
-            <p className="text-muted-foreground">Alla resor är taggade!</p>
+            <p className="text-muted-foreground">{t("compliance.allTagged")}</p>
           )}
         </CardContent>
       </Card>

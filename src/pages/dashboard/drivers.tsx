@@ -1,7 +1,8 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { UserPlus } from "lucide-react";
+import { IconUserPlus } from "@tabler/icons-react";
+import { useTranslation } from "react-i18next";
 
 function TableSkeleton({ rows = 5 }: { rows?: number }) {
   return (
@@ -26,6 +27,7 @@ function TableSkeleton({ rows = 5 }: { rows?: number }) {
 }
 
 export function DriversPage() {
+  const { t } = useTranslation();
   // TODO: Replace with real data from useDrivers hook
   const loading = false;
 
@@ -33,26 +35,26 @@ export function DriversPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Förare</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{t("drivers.title")}</h1>
           <p className="text-muted-foreground">
-            Hantera förare i din organisation.
+            {t("drivers.description")}
           </p>
         </div>
         <Button>
-          <UserPlus className="mr-2 h-4 w-4" />
-          Bjud in förare
+          <IconUserPlus className="mr-2 h-4 w-4" />
+          {t("drivers.inviteDriver")}
         </Button>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Alla förare</CardTitle>
+          <CardTitle>{t("drivers.allDrivers")}</CardTitle>
         </CardHeader>
         <CardContent>
           {loading ? (
             <TableSkeleton />
           ) : (
-            <p className="text-muted-foreground">Inga förare tillagda ännu.</p>
+            <p className="text-muted-foreground">{t("drivers.noDrivers")}</p>
           )}
         </CardContent>
       </Card>

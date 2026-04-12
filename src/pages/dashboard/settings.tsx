@@ -1,13 +1,17 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { useTranslation } from "react-i18next";
+import { LanguageSwitcher } from "@/components/language-switcher";
 
 export function SettingsPage() {
+  const { t } = useTranslation();
+
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Inställningar</h1>
+        <h1 className="text-2xl font-bold tracking-tight">{t("settings.title")}</h1>
         <p className="text-muted-foreground">
-          Hantera organisation, taggar, administratörer och fakturering.
+          {t("settings.description")}
         </p>
       </div>
 
@@ -16,41 +20,51 @@ export function SettingsPage() {
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Organisation</CardTitle>
-            <CardDescription>Namn, adress och organisationsnummer.</CardDescription>
+            <CardTitle>{t("settings.organization")}</CardTitle>
+            <CardDescription>{t("settings.organizationDescription")}</CardDescription>
           </CardHeader>
           <CardContent>
-            <p className="text-sm text-muted-foreground">Kommer snart.</p>
+            <p className="text-sm text-muted-foreground">{t("common.comingSoon")}</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>Taggar</CardTitle>
-            <CardDescription>Hantera anpassade taggar för resor.</CardDescription>
+            <CardTitle>{t("settings.tags")}</CardTitle>
+            <CardDescription>{t("settings.tagsDescription")}</CardDescription>
           </CardHeader>
           <CardContent>
-            <p className="text-sm text-muted-foreground">Kommer snart.</p>
+            <p className="text-sm text-muted-foreground">{t("common.comingSoon")}</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>Administratörer</CardTitle>
-            <CardDescription>Bjud in och hantera administratörer.</CardDescription>
+            <CardTitle>{t("settings.admins")}</CardTitle>
+            <CardDescription>{t("settings.adminsDescription")}</CardDescription>
           </CardHeader>
           <CardContent>
-            <p className="text-sm text-muted-foreground">Kommer snart.</p>
+            <p className="text-sm text-muted-foreground">{t("common.comingSoon")}</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>Fakturering</CardTitle>
-            <CardDescription>Prenumeration och betalningshistorik.</CardDescription>
+            <CardTitle>{t("settings.billing")}</CardTitle>
+            <CardDescription>{t("settings.billingDescription")}</CardDescription>
           </CardHeader>
           <CardContent>
-            <p className="text-sm text-muted-foreground">Kommer snart.</p>
+            <p className="text-sm text-muted-foreground">{t("common.comingSoon")}</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>{t("settings.language")}</CardTitle>
+            <CardDescription>{t("settings.languageDescription")}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <LanguageSwitcher />
           </CardContent>
         </Card>
       </div>
