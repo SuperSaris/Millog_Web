@@ -34,14 +34,23 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useAuth } from "@/contexts/auth-context";
+import { useOrg } from "@/contexts/org-context";
 
-const navItems = [
+interface NavItem {
+  titleKey: string;
+  url: string;
+  icon: React.ComponentType;
+  /** Only show to these roles. undefined = show to everyone. */
+  roles?: string[];
+}
+
+const navItems: NavItem[] = [
   { titleKey: "nav.overview",   url: "/dashboard",            icon: IconDashboard },
   { titleKey: "nav.drivers",    url: "/dashboard/drivers",    icon: IconUsers },
   { titleKey: "nav.vehicles",   url: "/dashboard/vehicles",   icon: IconCar },
   { titleKey: "nav.compliance", url: "/dashboard/compliance", icon: IconClipboardCheck },
   { titleKey: "nav.reports",    url: "/dashboard/reports",    icon: IconFileText },
-  { titleKey: "nav.settings",   url: "/dashboard/settings",   icon: IconSettings },
+  { titleKey: "nav.settings",   url: "/dashboard/settings",   icon: IconSettings, roles: ["admin"] },
 ];
 
 function getInitials(email: string | undefined): string {
@@ -55,6 +64,11 @@ export function AppSidebar() {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, signOut } = useAuth();
+  const { organization, role } = useOrg();
+
+  const visibleItems = navItems.filter(
+    (item) => !item.roles || (role && item.roles.includes(role)),
+  );
 
   return (
     <Sidebar collapsible="icon">
@@ -66,7 +80,9 @@ export function AppSidebar() {
                 <IconBolt className="size-4" />
               </div>
               <div className="grid flex-1 text-left text-sm leading-tight">
-                <span className="truncate font-bold">Millog</span>
+                <span className="truncate font-bold">
+                  {organization?.name ?? "Millog"}
+                </span>
                 <span className="truncate text-xs text-muted-foreground">
                   {t("nav.fleetManagement")}
                 </span>
@@ -81,7 +97,7 @@ export function AppSidebar() {
           <SidebarGroupLabel>{t("nav.navigation")}</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {navItems.map((item) => (
+              {visibleItems.map((item) => (
                 <SidebarMenuItem key={item.url}>
                   <SidebarMenuButton
                     tooltip={t(item.titleKey)}

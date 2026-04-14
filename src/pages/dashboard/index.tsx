@@ -3,6 +3,7 @@ import { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "@/contexts/auth-context";
+import { useOrg } from "@/contexts/org-context";
 import { supabase } from "@/lib/supabase";
 import {
   Card,
@@ -598,10 +599,138 @@ function RecentTripsCard({ trips, loading }: { trips: TripRow[]; loading: boolea
   );
 }
 
+// ── Welcome onboarding (no org) ───────────────────────────────
+function WelcomeOnboarding() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+
+  const steps = [
+    {
+      icon: <IconRoute className="size-5" />,
+      title: t("dashboard.onboardingStep1Title"),
+      desc: t("dashboard.onboardingStep1Desc"),
+      color: "#3b82f6",
+    },
+    {
+      icon: <IconCar className="size-5" />,
+      title: t("dashboard.onboardingStep2Title"),
+      desc: t("dashboard.onboardingStep2Desc"),
+      color: "#8b5cf6",
+    },
+    {
+      icon: <IconTrendingUp className="size-5" />,
+      title: t("dashboard.onboardingStep3Title"),
+      desc: t("dashboard.onboardingStep3Desc"),
+      color: "#22c55e",
+    },
+  ];
+
+  return (
+    <div className="space-y-8">
+      <div className="text-center py-8">
+        <div className="mx-auto w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
+          <IconBolt className="size-8 text-primary" />
+        </div>
+        <h1 className="text-3xl font-bold tracking-tight">{t("dashboard.welcomeTitle")}</h1>
+        <p className="mt-2 text-muted-foreground max-w-md mx-auto">{t("dashboard.welcomeSubtitle")}</p>
+        <Button className="mt-6" size="lg" onClick={() => navigate("/signup")}>
+          {t("dashboard.createOrgButton")}
+        </Button>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        {steps.map((step) => (
+          <Card key={step.title}>
+            <CardContent className="pt-6">
+              <div className="flex items-start gap-3">
+                <div className="rounded-lg p-2" style={{ backgroundColor: step.color + "18" }}>
+                  <span style={{ color: step.color }}>{step.icon}</span>
+                </div>
+                <div>
+                  <p className="font-semibold">{step.title}</p>
+                  <p className="text-sm text-muted-foreground mt-0.5">{step.desc}</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Getting-started checklist (has org but empty) ─────────────
+function GettingStartedBanner({
+  driverCount,
+  vehicleCount,
+}: {
+  driverCount: number;
+  vehicleCount: number;
+}) {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+
+  const steps = [
+    {
+      done: driverCount > 1, // >1 because admin is member 0
+      label: t("dashboard.stepInviteDrivers"),
+      action: () => navigate("/dashboard/drivers"),
+    },
+    {
+      done: vehicleCount > 0,
+      label: t("dashboard.stepAddVehicles"),
+      action: () => navigate("/dashboard/vehicles"),
+    },
+    {
+      done: true, // settings always exists
+      label: t("dashboard.stepReviewSettings"),
+      action: () => navigate("/dashboard/settings"),
+    },
+  ];
+
+  const allDone = steps.every((s) => s.done);
+  if (allDone) return null;
+
+  return (
+    <Card className="border-primary/20 bg-primary/5">
+      <CardContent className="pt-6">
+        <div className="flex items-start gap-3">
+          <div className="rounded-lg p-2 bg-primary/10">
+            <IconCircleCheck className="size-5 text-primary" />
+          </div>
+          <div className="flex-1">
+            <p className="font-semibold">{t("dashboard.getStartedTitle")}</p>
+            <p className="text-sm text-muted-foreground mt-0.5">{t("dashboard.getStartedDesc")}</p>
+            <div className="mt-4 space-y-2">
+              {steps.map((step) => (
+                <button
+                  key={step.label}
+                  onClick={step.action}
+                  className="flex items-center gap-2 text-sm w-full text-left hover:underline cursor-pointer"
+                >
+                  {step.done ? (
+                    <IconCircleCheck className="size-4 text-emerald-500 shrink-0" />
+                  ) : (
+                    <div className="size-4 rounded-full border-2 border-muted-foreground/30 shrink-0" />
+                  )}
+                  <span className={step.done ? "text-muted-foreground line-through" : "font-medium"}>
+                    {step.label}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────
 export function DashboardPage() {
   const { t } = useTranslation();
   const { user } = useAuth();
+  const { organization, loading: orgLoading } = useOrg();
 
   const [trips, setTrips]           = useState<TripRow[]>([]);
   const [vehicle, setVehicle]       = useState<VehicleRow | null>(null);
@@ -609,9 +738,26 @@ export function DashboardPage() {
   const [snapshots, setSnapshots]   = useState<SnapshotRow[]>([]);
   const [recentTrips, setRecentTrips] = useState<TripRow[]>([]);
   const [loading, setLoading]       = useState(true);
+  const [driverCount, setDriverCount] = useState(0);
+  const [vehicleCount, setVehicleCount] = useState(0);
 
   useEffect(() => {
     if (!user) return;
+
+    // Fetch org member/vehicle counts for getting-started banner
+    if (organization) {
+      supabase
+        .from("organization_members")
+        .select("id", { count: "exact", head: true })
+        .eq("organization_id", organization.id)
+        .eq("status", "active")
+        .then(({ count }) => setDriverCount(count ?? 0));
+      supabase
+        .from("organization_vehicles")
+        .select("id", { count: "exact", head: true })
+        .eq("organization_id", organization.id)
+        .then(({ count }) => setVehicleCount(count ?? 0));
+    }
 
     const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
@@ -673,7 +819,7 @@ export function DashboardPage() {
         setLoading(false);
       }
     });
-  }, [user]);
+  }, [user, organization]);
 
   const lastTripEnd = useMemo((): { lat: number; lng: number } | null => {
     for (const tr of recentTrips) {
@@ -690,8 +836,16 @@ export function DashboardPage() {
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "God morgon" : hour < 18 ? "God eftermiddag" : "God kväll";
 
+  // No organization — show onboarding welcome
+  if (!orgLoading && !organization) {
+    return <WelcomeOnboarding />;
+  }
+
   return (
     <div className="space-y-6">
+      {/* Getting-started checklist for new orgs */}
+      <GettingStartedBanner driverCount={driverCount} vehicleCount={vehicleCount} />
+
       {/* Page header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>

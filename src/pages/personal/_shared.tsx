@@ -1,7 +1,9 @@
 // _shared.tsx — reusable types, constants, helpers, and trip components for personal section
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "@/contexts/auth-context";
+import { cn } from "@/lib/utils";
 import { supabase } from "@/lib/supabase";
 import { Input } from "@/components/ui/input";
 import { Calendar } from "@/components/ui/calendar";
@@ -52,6 +54,8 @@ import {
   IconX,
   IconChevronDown,
   IconFocusCentered,
+  IconAlertTriangle,
+  IconCheck,
 } from "@tabler/icons-react";
 import {
   XAxis,
@@ -60,7 +64,20 @@ import {
   ResponsiveContainer,
   AreaChart,
   Area,
+  Cell,
+  PieChart,
+  Pie,
 } from "recharts";
+import {
+  aggregateStats,
+  computeEfficiencyStats,
+  computeChargingStats,
+  computeWltpEfficiency,
+  buildFuelComparison,
+  contextNoteText,
+  type StatPeriod,
+  type ChargingSessionRow,
+} from "@/lib/stats-calculations";
 import L from "leaflet";
 import { MapContainer, TileLayer, Polyline, Marker, useMap } from "react-leaflet";
 
@@ -101,9 +118,15 @@ export type TripRow = {
   odometer_end_km: number | null;
   tariff_kr_per_kwh_used: number | null;
   needs_review: boolean;
+  // Trip source + merge metadata
+  source: string | null;
+  vehicle_id: string | null;
+  superseded_by: string | null;
 };
 
 export type Period = "week" | "month" | "quarter" | "year";
+// StatPeriod is the richer superset used by StatisticsTab — re-exported for consumers
+export type { StatPeriod } from "@/lib/stats-calculations";
 
 type LatLng = { lat: number; lng: number };
 
@@ -398,8 +421,8 @@ export function KpiCard({
 }) {
   return (
     <Card className="overflow-hidden">
-      <CardContent className="p-5">
-        <div className="flex items-start justify-between mb-3">
+      <CardContent className="p-4">
+        <div className="flex items-start justify-between mb-2">
           <div className="rounded-lg p-2" style={{ backgroundColor: color + "18" }}>
             <Icon className="h-4 w-4" style={{ color }} />
           </div>
@@ -412,7 +435,7 @@ export function KpiCard({
         <p className="text-sm text-muted-foreground mb-0.5">{title}</p>
         <p className="text-2xl font-bold tracking-tight leading-none">{value}</p>
         {sub && <p className="text-xs text-muted-foreground mt-1">{sub}</p>}
-        {sparkData && <div className="mt-3"><Sparkline data={sparkData} color={color} /></div>}
+        {sparkData && <div className="mt-2"><Sparkline data={sparkData} color={color} /></div>}
       </CardContent>
     </Card>
   );
@@ -1173,7 +1196,7 @@ const SYSTEM_TAG_COLORS: Record<string, string> = {
 export function TripsTab({
   trips: initialTrips, loading, loadingMore, hasMore, onLoadMore,
   periodTotals, period, onPeriodChange, onSelect,
-  customTags = [], customRange, onCustomRangeChange,
+  customTags = [], customRange, onCustomRangeChange, onRefresh,
 }: {
   trips: TripRow[]; loading: boolean; period: Period;
   loadingMore?: boolean;
@@ -1184,12 +1207,23 @@ export function TripsTab({
   customTags?: CustomTag[];
   customRange: CustomRange | null;
   onCustomRangeChange: (r: CustomRange | null) => void;
+  onRefresh?: () => void;
 }) {
   const { t } = useTranslation();
   const { user } = useAuth();
   const [tagFilter, setTagFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [tagOverrides, setTagOverrides] = useState<Record<string, string>>({});
+
+  // ── Selection + merge state ──────────────────────────────────
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [mergeSheetOpen, setMergeSheetOpen] = useState(false);
+  const [mergeTag, setMergeTag] = useState("untagged");
+  const [merging, setMerging] = useState(false);
+  const [mergeError, setMergeError] = useState<string | null>(null);
+  const [bulkTagOpen, setBulkTagOpen] = useState(false);
+  const [bulkTagging, setBulkTagging] = useState(false);
 
   // Reset overrides when trips list refreshes
   useEffect(() => { setTagOverrides({}); }, [initialTrips]);
@@ -1238,6 +1272,75 @@ export function TripsTab({
   const untaggedCount = useMemo(() =>
     trips.filter(tr => tr.tag === "untagged" || !knownTagNames.has(tr.tag)).length,
   [trips, knownTagNames]);
+
+  const needsReviewCount = useMemo(() =>
+    trips.filter(tr => tr.needs_review).length,
+  [trips]);
+
+  // ── Selection helpers ────────────────────────────────────────
+  function toggleSelect(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  function exitSelectionMode() {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+    setMergeSheetOpen(false);
+    setMergeError(null);
+    setBulkTagOpen(false);
+  }
+
+  // ── Bulk tag ─────────────────────────────────────────────────
+  async function handleBulkTag(newTag: string) {
+    if (!user || selectedIds.size === 0) return;
+    setBulkTagging(true);
+    const ids = Array.from(selectedIds);
+    // Optimistic
+    setTagOverrides(prev => {
+      const next = { ...prev };
+      for (const id of ids) next[id] = newTag;
+      return next;
+    });
+    const { error } = await supabase
+      .from("trips")
+      .update({ tag: newTag, needs_review: false })
+      .in("id", ids)
+      .eq("user_id", user.id);
+    if (error) {
+      // Revert
+      setTagOverrides(prev => {
+        const next = { ...prev };
+        for (const id of ids) delete next[id];
+        return next;
+      });
+    }
+    setBulkTagging(false);
+    setBulkTagOpen(false);
+    exitSelectionMode();
+  }
+
+  // ── Merge ────────────────────────────────────────────────────
+  async function handleMergeConfirm() {
+    if (!user) return;
+    const { validateMergeSelection, mergeTrips } = await import("@/lib/merge-trips");
+    const selectedTrips = trips.filter(tr => selectedIds.has(tr.id));
+    const err = validateMergeSelection(selectedTrips);
+    if (err) { setMergeError(err); return; }
+    setMerging(true);
+    setMergeError(null);
+    try {
+      await mergeTrips(selectedTrips, mergeTag, user.id);
+      exitSelectionMode();
+      onRefresh?.();
+    } catch (e) {
+      setMergeError((e as Error).message);
+    } finally {
+      setMerging(false);
+    }
+  }
 
   const q = search.trim().toLowerCase();
 
@@ -1337,15 +1440,55 @@ export function TripsTab({
             </button>
           )}
         </div>
+        {/* Select button — enters selection/merge mode */}
+        {!loading && trips.length >= 2 && !selectionMode && (
+          <button
+            className="h-8 px-3 text-xs text-muted-foreground hover:text-foreground border rounded-lg transition-colors shrink-0"
+            onClick={() => setSelectionMode(true)}
+          >
+            Välj
+          </button>
+        )}
+        {selectionMode && (
+          <button
+            className="h-8 px-3 text-xs text-muted-foreground hover:text-foreground border rounded-lg transition-colors shrink-0"
+            onClick={exitSelectionMode}
+          >
+            <IconX className="h-3.5 w-3.5 inline mr-1" />
+            Avbryt
+          </button>
+        )}
       </div>
 
+      {/* ── needs_review banner ── */}
+      {!loading && needsReviewCount > 0 && !selectionMode && (
+        <button
+          className="w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl bg-amber-50 border border-amber-200 text-left hover:bg-amber-100 transition-colors group"
+          onClick={() => setTagFilter(tagFilter === "untagged" ? "all" : "untagged")}
+        >
+          <IconAlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <span className="text-sm font-medium text-amber-800">
+              {needsReviewCount} {needsReviewCount === 1 ? "resa behöver märkas" : "resor behöver märkas"}
+            </span>
+            <p className="text-xs text-amber-600/80 leading-tight">Klicka för att filtrera på omärkta resor</p>
+          </div>
+          <IconChevronRight className="h-4 w-4 text-amber-400 group-hover:text-amber-600 transition-colors shrink-0" />
+        </button>
+      )}
+
       {/* ── Summary bar ── */}
-      {!loading && trips.length > 0 && (
+      {!loading && trips.length > 0 && !selectionMode && (
         <p className="text-xs text-muted-foreground/70 tabular-nums">
           {summaryDisplay.partial && <span title="Visar första sidan — ladda fler för exakt antal">~</span>}
           {summaryDisplay.count} {summaryDisplay.count === 1 ? "resa" : "resor"}
           {" · "}{formatKm(summaryDisplay.km)}
           {summaryDisplay.kr > 0 && <> · {Math.round(summaryDisplay.kr)} kr</>}
+        </p>
+      )}
+      {selectionMode && (
+        <p className="text-xs text-muted-foreground/70">
+          {selectedIds.size === 0 ? "Klicka på resor för att välja" : `${selectedIds.size} ${selectedIds.size === 1 ? "resa vald" : "resor valda"}`}
         </p>
       )}
 
@@ -1375,23 +1518,46 @@ export function TripsTab({
                 <span className="text-sm text-muted-foreground font-medium tabular-nums">{formatKm(group.totalKm)}</span>
               </div>
               <div className="rounded-xl border overflow-hidden">
-                {group.trips.map(trip => {
+              {group.trips.map(trip => {
                   const eff = resolveTag(trip);
                   const tagColor = getTagColor(eff);
                   const cost = formatSek(trip.cost_kr);
                   const dur = tripDuration(trip.started_at, trip.ended_at);
+                  const isSelected = selectedIds.has(trip.id);
                   return (
                     <div
                       key={trip.id}
-                      className="flex items-center gap-3 px-4 py-3.5 border-b last:border-b-0 hover:bg-muted/40 transition-colors group"
-                      style={{ borderLeftWidth: 3, borderLeftStyle: "solid", borderLeftColor: tagColor }}
+                      className={`flex items-center gap-3 px-4 py-3.5 border-b last:border-b-0 transition-colors group ${
+                        isSelected ? "bg-blue-50" : "hover:bg-muted/40"
+                      }`}
+                      style={{ borderLeftWidth: 3, borderLeftStyle: "solid", borderLeftColor: isSelected ? "#3b82f6" : tagColor }}
                     >
-                      <button className="flex-1 min-w-0 text-left" onClick={() => onSelect(trip)}>
+                      {/* Selection checkbox */}
+                      {selectionMode && (
+                        <button
+                          className={`w-5 h-5 rounded border shrink-0 flex items-center justify-center transition-colors ${
+                            isSelected ? "bg-blue-500 border-blue-500" : "border-gray-300 hover:border-blue-400"
+                          }`}
+                          onClick={() => toggleSelect(trip.id)}
+                        >
+                          {isSelected && <IconCheck className="h-3 w-3 text-white" />}
+                        </button>
+                      )}
+                      <button
+                        className="flex-1 min-w-0 text-left"
+                        onClick={() => selectionMode ? toggleSelect(trip.id) : onSelect(trip)}
+                      >
                         <div className="flex items-center gap-1.5 text-sm font-medium leading-tight mb-1">
                           <span className="truncate max-w-36 text-foreground">{trip.start_address?.split(",")[0] ?? "Okänd"}</span>
                           <IconArrowNarrowRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                           <span className="truncate max-w-36 text-foreground">{trip.end_address?.split(",")[0] ?? "Okänd"}</span>
                           {trip.notes && <IconNote className="h-3 w-3 shrink-0 text-muted-foreground/50 ml-0.5" title={trip.notes} />}
+                          {trip.needs_review && (
+                            <IconAlertTriangle className="h-3 w-3 shrink-0 text-amber-500 ml-0.5" title="Behöver märkas" />
+                          )}
+                          {trip.source === "user_merged" && (
+                            <IconLayersLinked className="h-3 w-3 shrink-0 text-blue-400 ml-0.5" title="Sammanslagen resa" />
+                          )}
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-muted-foreground">
@@ -1401,41 +1567,45 @@ export function TripsTab({
                         </div>
                       </button>
 
-                      {/* Inline quick-tag select */}
-                      <div className="shrink-0" onClick={e => e.stopPropagation()}>
-                        <Select value={eff} onValueChange={v => handleTagChange(trip.id, v, eff)}>
-                          <SelectTrigger
-                            className="h-auto py-0.5 px-2 text-[11px] font-medium border rounded-full shadow-none focus:ring-0 w-auto gap-1"
-                            style={{
-                              backgroundColor: tagColor + "20",
-                              borderColor: tagColor + "60",
-                              color: tagColor,
-                            }}
-                          >
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {allTagDefs.map(td => (
-                              <SelectItem key={td.name} value={td.name} className="text-sm">
-                                <div className="flex items-center gap-2">
-                                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: td.color }} />
-                                  {td.label}
-                                </div>
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
+                      {/* Inline quick-tag select — hidden in selection mode */}
+                      {!selectionMode && (
+                        <div className="shrink-0" onClick={e => e.stopPropagation()}>
+                          <Select value={eff} onValueChange={v => handleTagChange(trip.id, v, eff)}>
+                            <SelectTrigger
+                              className="h-auto py-0.5 px-2 text-[11px] font-medium border rounded-full shadow-none focus:ring-0 w-auto gap-1"
+                              style={{
+                                backgroundColor: tagColor + "20",
+                                borderColor: tagColor + "60",
+                                color: tagColor,
+                              }}
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {allTagDefs.map(td => (
+                                <SelectItem key={td.name} value={td.name} className="text-sm">
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: td.color }} />
+                                    {td.label}
+                                  </div>
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
 
                       {/* Metrics */}
-                      <button className="text-right shrink-0" onClick={() => onSelect(trip)}>
+                      <button className="text-right shrink-0" onClick={() => selectionMode ? toggleSelect(trip.id) : onSelect(trip)}>
                         <p className="text-sm font-semibold tabular-nums">{formatKm(trip.distance_km)}</p>
                         {cost && <p className="text-xs text-muted-foreground tabular-nums">{cost}</p>}
                         {trip.energy_used_kwh != null && (
                           <p className="text-xs text-blue-500 tabular-nums">{trip.energy_used_kwh.toFixed(1)} kWh</p>
                         )}
                       </button>
-                      <IconChevronRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" onClick={() => onSelect(trip)} />
+                      {!selectionMode && (
+                        <IconChevronRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" onClick={() => onSelect(trip)} />
+                      )}
                     </div>
                   );
                 })}
@@ -1446,7 +1616,7 @@ export function TripsTab({
       )}
 
       {/* ── Load more ── */}
-      {!loading && hasMore && (
+      {!loading && hasMore && !selectionMode && (
         <div className="flex justify-center pt-2 pb-4">
           <button
             className="text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
@@ -1457,29 +1627,258 @@ export function TripsTab({
           </button>
         </div>
       )}
+
+      {/* ── Floating selection action bar ── */}
+      {selectionMode && selectedIds.size > 0 && (
+        <div className="sticky bottom-4 z-50 flex justify-center">
+          <div className="flex items-center gap-2 bg-foreground text-background rounded-2xl px-4 py-2.5 shadow-xl border">
+            <span className="text-sm font-medium tabular-nums mr-1">
+              {selectedIds.size} {selectedIds.size === 1 ? "vald" : "valda"}
+            </span>
+            {/* Bulk tag */}
+            <div className="relative">
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-7 text-xs gap-1.5 bg-white/10 hover:bg-white/20 text-background border-white/20"
+                onClick={() => setBulkTagOpen(b => !b)}
+                disabled={bulkTagging}
+              >
+                Tagga alla
+              </Button>
+              {bulkTagOpen && (
+                <div className="absolute bottom-9 left-0 rounded-xl border bg-background shadow-xl min-w-36 overflow-hidden z-50">
+                  {allTagDefs.map(td => (
+                    <button
+                      key={td.name}
+                      className="flex items-center gap-2.5 w-full px-3 py-2 text-sm hover:bg-muted/60 transition-colors text-foreground"
+                      onClick={() => handleBulkTag(td.name)}
+                    >
+                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: td.color }} />
+                      {td.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {/* Merge — only if ≥2 selected */}
+            {selectedIds.size >= 2 && (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-7 text-xs gap-1.5 bg-blue-500 hover:bg-blue-600 text-white border-blue-500"
+                onClick={() => { setMergeTag("untagged"); setMergeError(null); setMergeSheetOpen(true); }}
+              >
+                <IconLayersLinked className="h-3.5 w-3.5" />
+                Slå ihop
+              </Button>
+            )}
+            <button
+              className="h-7 w-7 flex items-center justify-center rounded-lg text-background/70 hover:text-background transition-colors"
+              onClick={exitSelectionMode}
+            >
+              <IconX className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Merge confirm sheet ── */}
+      <Sheet open={mergeSheetOpen} onOpenChange={v => { if (!v && !merging) { setMergeSheetOpen(false); setMergeError(null); } }}>
+        <SheetContent side="bottom" className="rounded-t-2xl pb-safe">
+          <SheetHeader className="pb-4">
+            <SheetTitle className="flex items-center gap-2">
+              <IconLayersLinked className="h-4 w-4 text-blue-500" />
+              Slå ihop {selectedIds.size} resor
+            </SheetTitle>
+          </SheetHeader>
+          <div className="space-y-4">
+            <div>
+              <p className="text-xs text-muted-foreground mb-2">Etikett för den sammanslagna resan</p>
+              <Select value={mergeTag} onValueChange={setMergeTag} disabled={merging}>
+                <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {allTagDefs.map(td => (
+                    <SelectItem key={td.name} value={td.name}>
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: td.color }} />
+                        {td.label}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              {trips
+                .filter(tr => selectedIds.has(tr.id))
+                .sort((a, b) => a.started_at.localeCompare(b.started_at))
+                .map(tr => (
+                  <div key={tr.id} className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 shrink-0" />
+                    <span>{formatTime(tr.started_at)} · {formatKm(tr.distance_km)}</span>
+                    <span className="truncate">{tr.start_address?.split(",")[0]} → {tr.end_address?.split(",")[0]}</span>
+                  </div>
+                ))}
+            </div>
+            {mergeError && (
+              <p className="text-sm text-red-500 flex items-center gap-1.5">
+                <IconAlertTriangle className="h-4 w-4 shrink-0" /> {mergeError}
+              </p>
+            )}
+            <div className="flex gap-2 pt-1">
+              <Button className="flex-1" onClick={handleMergeConfirm} disabled={merging}>
+                {merging ? "Slår ihop…" : "Bekräfta sammanslagning"}
+              </Button>
+              <Button variant="outline" onClick={() => { setMergeSheetOpen(false); setMergeError(null); }} disabled={merging}>
+                Avbryt
+              </Button>
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }
 
 // ── StatisticsTab ────────────────────────────────────────────
-export function StatisticsTab({ trips, loading, period, onPeriodChange }: {
-  trips: TripRow[]; loading: boolean; period: Period; onPeriodChange: (p: Period) => void;
+// Scalability note: This component is OEM-agnostic. All calculations delegate
+// to stats-calculations.ts which operates on canonical schema columns only.
+// Adding Polestar/Volvo/BMW support = zero changes here; only the bridge
+// normalisation layer needs updating.
+
+type VehicleSpec = { battery_kwh_usable: number | null; battery_range_km_wltp: number | null };
+
+/** Collapsible stat card wrapper with optional footer note */
+function StatCard({
+  title, icon: Icon, iconColor = "#3b82f6", note, href, children,
+}: {
+  title: string;
+  icon: React.ElementType<{ className?: string; style?: React.CSSProperties }>;
+  iconColor?: string;
+  note?: string;
+  href?: string;
+  children: React.ReactNode;
+}) {
+  const navigate = useNavigate();
+  return (
+    <Card
+      className={cn("overflow-hidden", href && "cursor-pointer hover:ring-2 hover:ring-border transition-all")}
+      onClick={href ? () => navigate(href) : undefined}
+      role={href ? "button" : undefined}
+    >
+      <CardHeader className="pb-2">
+        <div className="flex items-center gap-2">
+          <span className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: iconColor + "1a" }}>
+            <Icon className="h-4 w-4" style={{ color: iconColor }} />
+          </span>
+          <CardTitle className="text-sm font-semibold">{title}</CardTitle>
+          {href && <IconChevronRight className="h-3.5 w-3.5 text-muted-foreground ml-auto" />}
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2 pt-0">{children}</CardContent>
+      {note && (
+        <div className="px-4 pb-3">
+          <p className="text-[11px] text-muted-foreground">{note}</p>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/** Two-column grid metric row */
+function StatRow({ label, value, sub, valueColor }: { label: string; value: string; sub?: string; valueColor?: string }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-xs text-muted-foreground shrink-0">{label}</span>
+      <span className="text-xs font-semibold tabular-nums text-right" style={valueColor ? { color: valueColor } : undefined}>
+        {value}{sub ? <span className="text-[11px] font-normal text-muted-foreground ml-1.5">· {sub}</span> : null}
+      </span>
+    </div>
+  );
+}
+
+/** Horizontal progress bar with label and value */
+function ProgressBar({ label, pct, color, value }: { label: string; pct: number; color: string; value?: string }) {
+  return (
+    <div className="space-y-0.5">
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-muted-foreground">{label}</span>
+        {value && <span className="font-medium tabular-nums">{value}</span>}
+      </div>
+      <div className="h-2 rounded-full bg-muted overflow-hidden">
+        <div className="h-full rounded-full transition-all duration-700" style={{ width: `${Math.min(100, pct * 100)}%`, backgroundColor: color }} />
+      </div>
+    </div>
+  );
+}
+
+// Period pill bar — richer than the old dropdown
+const STAT_PERIOD_PILLS: { value: StatPeriod; label: string }[] = [
+  { value: "week",    label: "7 dagar" },
+  { value: "month",  label: "30 dagar" },
+  { value: "quarter",label: "90 dagar" },
+  { value: "year",   label: "12 mån" },
+  { value: "all",    label: "Alla" },
+];
+
+function StatPeriodPills({
+  value, onChange, customRange, onCustomRangeChange,
+}: {
+  value: StatPeriod;
+  onChange: (p: StatPeriod) => void;
+  customRange: CustomRange | null;
+  onCustomRangeChange: (r: CustomRange | null) => void;
+}) {
+  return (
+    <PeriodCalendarPicker
+      value={value as Period}
+      onChange={p => onChange(p as StatPeriod)}
+      customRange={customRange}
+      onCustomRangeChange={onCustomRangeChange}
+    />
+  );
+}
+
+export function StatisticsTab({
+  trips, chargingSessions = [], customTags = [], vehicle = null,
+  loading, period, customRange = null, onPeriodChange, onCustomRangeChange,
+}: {
+  trips: TripRow[];
+  chargingSessions?: ChargingSessionRow[];
+  customTags?: CustomTag[];
+  vehicle?: VehicleSpec | null;
+  loading: boolean;
+  period: StatPeriod;
+  customRange?: CustomRange | null;
+  onPeriodChange: (p: StatPeriod) => void;
+  onCustomRangeChange?: (r: CustomRange | null) => void;
 }) {
   const { t } = useTranslation();
+  const [fuelConfig, setFuelConfig] = useState({
+    petrolKrPerL: 18.5, petrolLPer100km: 7.5, dieselKrPerL: 17.5, dieselLPer100km: 6.5,
+  });
+  const [showFuelConfig, setShowFuelConfig] = useState(false);
 
-  const stats = useMemo(() => {
-    const totalKm  = trips.reduce((s, tr) => s + (tr.distance_km ?? 0), 0);
-    const workKm   = trips.filter(tr => tr.tag === "work" || tr.tag === "commute").reduce((s, tr) => s + (tr.distance_km ?? 0), 0);
-    const elCost   = trips.reduce((s, tr) => s + (tr.cost_kr ?? 0), 0);
-    const milerKr  = workKm * MILERSATTNING_PER_KM;
-    const totalKwh = trips.reduce((s, tr) => s + (tr.energy_used_kwh ?? 0), 0);
-    const tagCounts: Record<TripTag, number> = { work: 0, commute: 0, personal: 0, untagged: 0 };
-    for (const tr of trips) {
-      const tag = (tr.tag ?? "untagged") as TripTag;
-      tagCounts[tag] = (tagCounts[tag] ?? 0) + 1;
-    }
-    return { totalKm, workKm, elCost, milerKr, totalKwh, tagCounts };
-  }, [trips]);
+  const fuel = useMemo(() => buildFuelComparison(
+    fuelConfig.petrolKrPerL, fuelConfig.petrolLPer100km,
+    fuelConfig.dieselKrPerL, fuelConfig.dieselLPer100km,
+  ), [fuelConfig]);
+
+  const wltpSpec = useMemo(() => computeWltpEfficiency(vehicle), [vehicle]);
+
+  // All stats derived from the canonical aggregation function — same for any OEM
+  const stats = useMemo(() => aggregateStats(trips, {
+    milersattningPerKm: MILERSATTNING_PER_KM,
+    fuel,
+    period,
+    customFrom: customRange?.from,
+    customTo: customRange?.to,
+    customTags: customTags.map(ct => ({ id: ct.id, name: ct.name, is_work_tag: ct.is_work_tag })),
+  }), [trips, fuel, period, customRange, customTags]);
+
+  const effStats = useMemo(() => computeEfficiencyStats(trips, wltpSpec), [trips, wltpSpec]);
+  const chargingStats = useMemo(() => computeChargingStats(chargingSessions, trips), [chargingSessions, trips]);
 
   const chartData = useMemo(() => {
     const byMonth = new Map<string, { label: string; km: number }>();
@@ -1490,43 +1889,124 @@ export function StatisticsTab({ trips, loading, period, onPeriodChange }: {
       const ex = byMonth.get(sortKey);
       byMonth.set(sortKey, { label, km: (ex?.km ?? 0) + (tr.distance_km ?? 0) });
     }
-    return Array.from(byMonth.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([, { label, km }]) => ({ month: label, km: Math.round(km) }));
+    return Array.from(byMonth.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([, { label, km }]) => ({ month: label, km: Math.round(km) }));
   }, [trips]);
 
-  const sparkData = chartData.map(d => d.km);
-  const totalTrips = trips.length;
-
-  const tagRows: { key: TripTag; label: string }[] = [
-    { key: "work",     label: t("personal.tagWork")     },
-    { key: "commute",  label: t("personal.tagCommute")  },
-    { key: "personal", label: t("personal.tagPersonal") },
-    { key: "untagged", label: t("personal.tagUntagged") },
-  ];
+  // Tag distribution data for pie chart — system + custom tags
+  const tagDistData = useMemo(() => {
+    const rows: { name: string; km: number; count: number; color: string }[] = [
+      { name: t("personal.tagWork"),     km: stats.work.km,     count: stats.work.count,     color: TAG_GRAPH_COLORS.work     },
+      { name: t("personal.tagCommute"),  km: stats.commute.km,  count: stats.commute.count,  color: TAG_GRAPH_COLORS.commute  },
+      { name: t("personal.tagPersonal"), km: stats.personal.km, count: stats.personal.count, color: TAG_GRAPH_COLORS.personal },
+      { name: t("personal.tagUntagged"), km: stats.untagged.km, count: stats.untagged.count, color: TAG_GRAPH_COLORS.untagged },
+    ];
+    for (const ct of customTags) {
+      const s = stats.customTagStats.get(ct.name);
+      if (s && (s.count > 0 || s.km > 0)) rows.push({ name: ct.name, km: s.km, count: s.count, color: ct.color });
+    }
+    return rows.filter(r => r.count > 0 || r.km > 0);
+  }, [stats, customTags, t]);
 
   if (loading) {
     return (
-      <div className="space-y-6">
-        <PeriodSelect value={period} onChange={onPeriodChange} />
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-xl" />)}
+      <div className="space-y-5">
+        <div className="flex gap-2 flex-wrap">
+          {STAT_PERIOD_PILLS.map(p => <div key={p.value} className="h-8 w-20 rounded-lg bg-muted animate-pulse" />)}
         </div>
-        <Skeleton className="h-60 rounded-xl" />
+        <Skeleton className="h-12 rounded-xl w-full" />
+        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-44 rounded-xl" />)}
+        </div>
       </div>
     );
   }
 
+  const note = contextNoteText(stats.totalKm, stats.tripCount, period);
+
+  // Drive style badge based on avg speed
+  const driveStyleBadge = stats.avgSpeedKmh > 70
+    ? { label: "Motorvägskörare", color: "#EF5350" }
+    : stats.avgSpeedKmh > 45
+    ? { label: "Blandkörare", color: "#FF9800" }
+    : { label: "Stadskörare", color: "#42A5F5" };
+
+  const effColor = effStats
+    ? effStats.vsSpec <= 0 ? "#10b981"
+    : effStats.vsSpec <= effStats.wltpSpec * 0.2 ? "#f59e0b"
+    : "#ef4444"
+    : undefined;
+
   return (
-    <div className="space-y-6">
-      <PeriodSelect value={period} onChange={onPeriodChange} />
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard title={t("personal.totalKm")}        value={`${Math.round(stats.totalKm).toLocaleString("sv-SE")} km`}     sub={`${totalTrips} ${t("personal.tripsCount").toLowerCase()}`} icon={IconRoute}     color="#3b82f6" sparkData={sparkData} />
-        <KpiCard title={t("personal.workKm")}         value={`${Math.round(stats.workKm).toLocaleString("sv-SE")} km`}      sub={`${t("personal.tagWork")} + ${t("personal.tagCommute")}`}  icon={IconBriefcase} color="#8b5cf6" />
-        <KpiCard title={t("personal.electricityCost")} value={stats.elCost > 0 ? `${Math.round(stats.elCost).toLocaleString("sv-SE")} kr` : "—"} sub={stats.totalKwh > 0 ? `${stats.totalKwh.toFixed(1)} kWh totalt` : undefined} icon={IconBolt} color="#f59e0b" />
-        <KpiCard title={t("personal.milersattning")}  value={stats.milerKr > 0 ? `${Math.round(stats.milerKr).toLocaleString("sv-SE")} kr` : "—"} sub={`${MILERSATTNING_PER_KM} kr/km`} icon={IconCash} color="#10b981" />
+    <div className="space-y-5">
+      {/* Period selector */}
+      <StatPeriodPills
+        value={period}
+        onChange={onPeriodChange}
+        customRange={customRange ?? null}
+        onCustomRangeChange={onCustomRangeChange ?? (() => {})}
+      />
+
+      {/* Compact KPI strip */}
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-xl border bg-muted/40 px-4 py-3">
+        {/* Total km */}
+        <div className="flex items-center gap-2.5">
+          <span className="rounded-md p-1.5 shrink-0" style={{ background: "#3b82f620" }}>
+            <IconRoute className="h-4 w-4" style={{ color: "#3b82f6" }} />
+          </span>
+          <div>
+            <p className="text-[11px] text-muted-foreground leading-tight">{t("personal.totalKm")}</p>
+            <p className="text-sm font-bold tabular-nums leading-snug">
+              {Math.round(stats.totalKm).toLocaleString("sv-SE")} km
+              <span className="text-[11px] font-normal text-muted-foreground ml-1">· {stats.tripCount} resor</span>
+            </p>
+          </div>
+        </div>
+        <div className="h-7 w-px bg-border hidden sm:block shrink-0" />
+        {/* Skatteavdrag */}
+        <div className="flex items-center gap-2.5">
+          <span className="rounded-md p-1.5 shrink-0" style={{ background: "#8b5cf620" }}>
+            <IconBriefcase className="h-4 w-4" style={{ color: "#8b5cf6" }} />
+          </span>
+          <div>
+            <p className="text-[11px] text-muted-foreground leading-tight">{t("personal.statCardTaxDeduction")}</p>
+            <p className="text-sm font-bold tabular-nums leading-snug">
+              {stats.taxDeduction > 0 ? `${Math.round(stats.taxDeduction).toLocaleString("sv-SE")} kr` : "—"}
+              <span className="text-[11px] font-normal text-muted-foreground ml-1">· {Math.round(stats.taxKm)} km</span>
+            </p>
+          </div>
+        </div>
+        <div className="h-7 w-px bg-border hidden sm:block shrink-0" />
+        {/* El-kostnad */}
+        <div className="flex items-center gap-2.5">
+          <span className="rounded-md p-1.5 shrink-0" style={{ background: "#f59e0b20" }}>
+            <IconBolt className="h-4 w-4" style={{ color: "#f59e0b" }} />
+          </span>
+          <div>
+            <p className="text-[11px] text-muted-foreground leading-tight">{t("personal.electricityCost")}</p>
+            <p className="text-sm font-bold tabular-nums leading-snug">
+              {stats.totalCost > 0 ? `${Math.round(stats.totalCost).toLocaleString("sv-SE")} kr` : "—"}
+              {stats.totalKwh > 0 && <span className="text-[11px] font-normal text-muted-foreground ml-1">· {stats.totalKwh.toFixed(1)} kWh</span>}
+            </p>
+          </div>
+        </div>
+        <div className="h-7 w-px bg-border hidden sm:block shrink-0" />
+        {/* Snittförbrukning */}
+        <div className="flex items-center gap-2.5">
+          <span className="rounded-md p-1.5 shrink-0" style={{ background: (effColor ?? "#10b981") + "20" }}>
+            <IconTrendingUp className="h-4 w-4" style={{ color: effColor ?? "#10b981" }} />
+          </span>
+          <div>
+            <p className="text-[11px] text-muted-foreground leading-tight">{t("personal.statCardAvgConsumption")}</p>
+            <p className="text-sm font-bold tabular-nums leading-snug" style={effColor ? { color: effColor } : undefined}>
+              {stats.avgEfficiency > 0 ? `${stats.avgEfficiency.toFixed(1)} kWh/100km` : "—"}
+              {effStats && <span className="text-[11px] font-normal text-muted-foreground ml-1" style={{ color: undefined }}>· WLTP {effStats.wltpSpec.toFixed(1)}</span>}
+            </p>
+          </div>
+        </div>
       </div>
-      <div className="grid gap-4 lg:grid-cols-3">
+
+      {/* Monthly km chart + tag distribution */}
+      <div className="grid gap-3 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
@@ -1534,13 +2014,13 @@ export function StatisticsTab({ trips, loading, period, onPeriodChange }: {
               <IconTrendingUp className="h-4 w-4 text-muted-foreground" />
             </div>
           </CardHeader>
-          <div className="px-6 pb-6">
+          <CardContent className="pt-0 pb-4">
             {chartData.length === 0 ? (
               <div className="flex items-center justify-center h-44">
                 <p className="text-sm text-muted-foreground">{t("personal.noData")}</p>
               </div>
             ) : (
-              <ResponsiveContainer width="100%" height={200}>
+              <ResponsiveContainer width="100%" height={150}>
                 <AreaChart data={chartData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
                   <defs>
                     <linearGradient id="blueGradStat" x1="0" y1="0" x2="0" y2="1">
@@ -1566,34 +2046,267 @@ export function StatisticsTab({ trips, loading, period, onPeriodChange }: {
                 </AreaChart>
               </ResponsiveContainer>
             )}
-          </div>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-semibold">{t("personal.tagBreakdown")}</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {tagRows.map(({ key, label }) => {
-              const count = stats.tagCounts[key] ?? 0;
-              const pct = totalTrips > 0 ? Math.round((count / totalTrips) * 100) : 0;
-              const ts = getTagStyle(key);
-              return (
-                <div key={key} className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <span className={`w-2 h-2 rounded-full ${ts.dot}`} />
-                      <span className="text-xs font-medium">{label}</span>
-                    </div>
-                    <span className="text-xs text-muted-foreground tabular-nums">{count} ({pct}%)</span>
-                  </div>
-                  <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                    <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, backgroundColor: TAG_GRAPH_COLORS[key] }} />
-                  </div>
-                </div>
-              );
-            })}
           </CardContent>
         </Card>
+
+        {/* ── Tag distribution ── */}
+        <StatCard title={t("personal.statCardDistribution")} icon={IconRoute} iconColor="#3b82f6" note={note}>
+          {tagDistData.length === 0 ? (
+            <p className="text-xs text-muted-foreground">Inga resor denna period</p>
+          ) : (
+            <div className="flex gap-3 items-start">
+              <PieChart width={80} height={80}>
+                <Pie data={tagDistData} dataKey="km" cx={36} cy={36} innerRadius={20} outerRadius={34} paddingAngle={2}>
+                  {tagDistData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                </Pie>
+              </PieChart>
+              <div className="flex-1 space-y-1.5 min-w-0 pt-0.5">
+                {tagDistData.map(row => (
+                  <div key={row.name} className="flex items-center justify-between gap-1 min-w-0">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: row.color }} />
+                      <span className="text-xs truncate">{row.name}</span>
+                    </div>
+                    <span className="text-xs tabular-nums shrink-0 ml-2">
+                      <span className="font-semibold">{Math.round(row.km)} km</span>
+                      <span className="text-[11px] text-muted-foreground ml-1">· {row.count}</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </StatCard>
+      </div>
+
+      {/* ── Stat cards grid ── */}
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+
+        {/* ── 1. Skatteavdrag ── */}
+        <StatCard title={t("personal.statCardTaxDeduction")} icon={IconBriefcase} iconColor="#8b5cf6" note={note}>
+          <div className="text-center py-1">
+            <p className="text-3xl font-bold tabular-nums" style={{ color: "#8b5cf6" }}>
+              {stats.taxDeduction > 0 ? `${Math.round(stats.taxDeduction).toLocaleString("sv-SE")} kr` : "—"}
+            </p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {stats.taxTripCount} tjänsteresor · {Math.round(stats.taxKm)} km
+            </p>
+          </div>
+          <div className="pt-1 space-y-2">
+            <StatRow label="Arbete" value={`${Math.round(stats.work.km)} km`} sub={`${stats.work.count} resor`} valueColor="#3b82f6" />
+            <StatRow label="Pendling" value={`${Math.round(stats.commute.km)} km`} sub={`${stats.commute.count} resor`} valueColor="#f59e0b" />
+            {customTags.filter(ct => ct.is_work_tag).map(ct => {
+              const s = stats.customTagStats.get(ct.name);
+              if (!s || s.count === 0) return null;
+              return <StatRow key={ct.id} label={ct.name} value={`${Math.round(s.km)} km`} sub={`${s.count} resor`} valueColor={ct.color} />;
+            })}
+            <div className="border-t pt-2">
+              <StatRow label="Ersättning per km" value={`${MILERSATTNING_PER_KM} kr/km`} />
+            </div>
+          </div>
+        </StatCard>
+
+        {/* ── 2. Energieffektivitet ── */}
+        <StatCard title={t("personal.statCardEfficiency")} icon={IconBolt} iconColor={effColor ?? "#10b981"} note={note} href={`/personal/statistics/efficiency?period=${period}`}>
+          {!effStats ? (
+            <p className="text-xs text-muted-foreground">Inte tillräckligt med energidata</p>
+          ) : (
+            <>
+              <div className="text-center py-1">
+                <p className="text-3xl font-bold tabular-nums" style={{ color: effColor }}>
+                  {effStats.avgKwhPer100.toFixed(1)} <span className="text-base font-normal">kWh/100km</span>
+                </p>
+                <p className="text-xs mt-0.5" style={{ color: effStats.vsSpec <= 0 ? "#10b981" : "#f59e0b" }}>
+                  {effStats.vsSpec <= 0 ? `${Math.abs(effStats.vsSpec).toFixed(1)} kWh under WLTP ↓` : `${effStats.vsSpec.toFixed(1)} kWh över WLTP ↑`}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <StatRow label="WLTP spec" value={`${effStats.wltpSpec.toFixed(1)} kWh/100km`} />
+                <StatRow label="Bästa resa" value={`${effStats.bestKwhPer100.toFixed(1)} kWh/100km`} valueColor="#10b981" />
+                <StatRow label="Sämsta resa" value={`${effStats.worstKwhPer100.toFixed(1)} kWh/100km`} valueColor="#ef4444" />
+                {effStats.avgSocDelta != null && <StatRow label="Snitt SoC-tapp" value={`${effStats.avgSocDelta.toFixed(1)}%`} />}
+                {effStats.avgCostPerKm != null && <StatRow label="kr/km" value={`${effStats.avgCostPerKm.toFixed(2)} kr`} />}
+                <StatRow label="Resor med energidata" value={`${effStats.tripCount}`} />
+              </div>
+            </>
+          )}
+        </StatCard>
+
+        {/* ── 3. Körmönster ── */}
+        <StatCard title={t("personal.statCardDriving")} icon={IconTrendingUp} iconColor="#06b6d4" note={note} href={`/personal/statistics/driving?period=${period}`}>
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              { label: "km/resa",    value: stats.tripCount > 0 ? `${stats.avgTripKm.toFixed(0)} km` : "—" },
+              { label: "Längsta resa", value: stats.longestTripKm > 0 ? `${Math.round(stats.longestTripKm)} km` : "—" },
+              { label: "Körtid totalt", value: stats.totalDriveMin > 0 ? (stats.totalDriveMin >= 60 ? `${Math.floor(stats.totalDriveMin/60)} h ${stats.totalDriveMin%60} min` : `${stats.totalDriveMin} min`) : "—" },
+              { label: "km/dag",     value: stats.periodDays > 0 ? `${(stats.totalKm / stats.periodDays).toFixed(1)} km` : "—" },
+            ].map(({ label, value }) => (
+              <div key={label} className="rounded-lg bg-muted/50 px-2 py-1.5">
+                <p className="text-[11px] text-muted-foreground">{label}</p>
+                <p className="text-sm font-bold tabular-nums mt-0.5">{value}</p>
+              </div>
+            ))}
+          </div>
+          <div className="pt-1">
+            <div className="flex items-center gap-1.5 mb-2">
+              <span className="text-xs font-medium">Körstil</span>
+              <span className="text-[11px] px-2 py-0.5 rounded-full font-medium" style={{ background: driveStyleBadge.color + "22", color: driveStyleBadge.color }}>
+                {driveStyleBadge.label}
+              </span>
+            </div>
+            {/* Time-of-day activity bars */}
+            {(() => {
+              const buckets = [
+                { label: "Morgon",  hours: [5,6,7,8],          color: "#FF9800" },
+                { label: "Dag",     hours: [9,10,11,12,13,14,15], color: "#42A5F5" },
+                { label: "Kväll",   hours: [16,17,18,19,20],   color: "#AB47BC" },
+                { label: "Natt",    hours: [21,22,23,0,1,2,3,4], color: "#78909C" },
+              ];
+              const counts = buckets.map(b => trips.filter(tr => b.hours.includes(new Date(tr.started_at).getHours())).length);
+              const maxCount = Math.max(...counts, 1);
+              return (
+                <div className="space-y-1">
+                  {buckets.map((b, i) => (
+                    <ProgressBar key={b.label} label={b.label} pct={(counts[i] ?? 0) / maxCount} color={b.color} value={(counts[i] ?? 0) > 0 ? `${counts[i] ?? 0} resor` : undefined} />
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+        </StatCard>
+
+        {/* ── 4. Bränslebesparingar ── */}
+        <StatCard title={t("personal.statCardFuelSavings")} icon={IconCash} iconColor="#10b981" note={note}>
+          <div className="text-center py-1">
+            <p className="text-3xl font-bold tabular-nums" style={{ color: stats.savingsVsPetrol >= 0 ? "#10b981" : "#ef4444" }}>
+              {stats.totalKm > 0 ? `${Math.round(stats.savingsVsPetrol).toLocaleString("sv-SE")} kr` : "—"}
+            </p>
+            <p className="text-xs text-muted-foreground mt-0.5">Besparing vs bensin</p>
+          </div>
+          <div className="space-y-2">
+            <StatRow label="Elkostnad (EV)" value={stats.totalCost > 0 ? `${Math.round(stats.totalCost)} kr` : "—"} valueColor="#10b981" />
+            <StatRow label="Motsv. bensinkostnad" value={stats.totalKm > 0 ? `${Math.round(stats.petrolEquivalent)} kr` : "—"} />
+            <StatRow label="Motsv. dieselkostnad" value={stats.totalKm > 0 ? `${Math.round(stats.dieselEquivalent)} kr` : "—"} />
+          </div>
+          {/* Comparison bars */}
+          {stats.totalKm > 0 && (() => {
+            const max = Math.max(stats.totalCost, stats.petrolEquivalent, stats.dieselEquivalent, 1);
+            return (
+              <div className="space-y-1.5 pt-1">
+                <ProgressBar label="EV" pct={stats.totalCost / max} color="#10b981" value={stats.totalCost > 0 ? `${(stats.totalCost / stats.totalKm).toFixed(2)} kr/km` : ""} />
+                <ProgressBar label="Bensin" pct={stats.petrolEquivalent / max} color="#f97316" value={`${fuel.petrol.krPerKm.toFixed(2)} kr/km`} />
+                <ProgressBar label="Diesel" pct={stats.dieselEquivalent / max} color="#eab308" value={`${fuel.diesel.krPerKm.toFixed(2)} kr/km`} />
+              </div>
+            );
+          })()}
+          {/* Fuel price config */}
+          <button
+            className="text-[11px] text-muted-foreground hover:text-foreground transition-colors mt-1"
+            onClick={() => setShowFuelConfig(s => !s)}
+          >
+            {showFuelConfig ? "Dölj inställningar ▲" : "Justera bränslepriser ▼"}
+          </button>
+          {showFuelConfig && (
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              {([
+                { key: "petrolKrPerL",     label: "Bensin kr/L" },
+                { key: "petrolLPer100km",  label: "Bensin L/100km" },
+                { key: "dieselKrPerL",     label: "Diesel kr/L" },
+                { key: "dieselLPer100km",  label: "Diesel L/100km" },
+              ] as const).map(({ key, label }) => (
+                <div key={key} className="space-y-0.5">
+                  <label className="text-[11px] text-muted-foreground">{label}</label>
+                  <input
+                    type="number" step="0.1" min="0"
+                    value={fuelConfig[key]}
+                    onChange={e => setFuelConfig(fc => ({ ...fc, [key]: parseFloat(e.target.value) || 0 }))}
+                    className="w-full h-7 rounded border bg-background px-2 text-xs tabular-nums"
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </StatCard>
+
+        {/* ── 5. Miljöpåverkan ── */}
+        <StatCard title={t("personal.statCardEnvironment")} icon={IconBolt} iconColor="#22c55e" note={note}>
+          <div className="text-center py-1">
+            <p className="text-3xl font-bold tabular-nums" style={{ color: "#22c55e" }}>
+              {stats.totalKm > 0 ? `${Math.round(stats.co2SavedKgVsPetrol)} kg` : "—"}
+            </p>
+            <p className="text-xs text-muted-foreground mt-0.5">CO₂ sparat vs bensin</p>
+          </div>
+          <div className="space-y-2">
+            <StatRow label="CO₂ sparat vs diesel" value={stats.totalKm > 0 ? `${Math.round(stats.co2SavedKgVsDiesel)} kg` : "—"} valueColor="#22c55e" />
+            <StatRow label="Bensinkört CO₂" value={stats.totalKm > 0 ? `${Math.round(stats.totalKm * fuel.petrol.co2GPerKm / 1000)} kg` : "—"} />
+            <StatRow label="Din Tesla CO₂" value={stats.totalKm > 0 ? `${Math.round(stats.totalKm * 3 / 1000)} kg` : "—"} sub="Sv. elnät 3 g/km" />
+            {stats.co2SavedKgVsPetrol > 0 && stats.periodDays > 0 && (
+              <StatRow
+                label="Trädsekvivalent/år"
+                value={`${((stats.co2SavedKgVsPetrol / stats.periodDays * 365) / 22).toFixed(1)} träd`}
+                valueColor="#22c55e"
+              />
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-2 pt-1">
+            <div className="rounded-lg bg-emerald-50 px-2 py-1.5 text-center">
+              <p className="text-[11px] text-emerald-600">Din bil</p>
+              <p className="text-sm font-bold text-emerald-700 tabular-nums">{stats.totalKm > 0 ? `${Math.round(stats.totalKm * 3 / 1000)} kg` : "—"}</p>
+            </div>
+            <div className="rounded-lg bg-red-50 px-2 py-1.5 text-center">
+              <p className="text-[11px] text-red-600">Bensinbil</p>
+              <p className="text-sm font-bold text-red-700 tabular-nums">{stats.totalKm > 0 ? `${Math.round(stats.totalKm * fuel.petrol.co2GPerKm / 1000)} kg` : "—"}</p>
+            </div>
+          </div>
+        </StatCard>
+
+        {/* ── 6. Laddningsbeteende ── */}
+        <StatCard title={t("personal.statCardCharging")} icon={IconBolt} iconColor="#f59e0b" note={note}>
+          {!chargingStats.hasSocData && !chargingStats.hasChargingData ? (
+            <p className="text-xs text-muted-foreground">Ingen laddningsdata för perioden</p>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-lg bg-muted/50 px-2 py-1.5 text-center">
+                  <p className="text-[11px] text-muted-foreground">Avgångsbatteri</p>
+                  <p className="text-base font-bold tabular-nums">
+                    {chargingStats.avgDepartureSoc != null ? `${Math.round(chargingStats.avgDepartureSoc)}%` : "—"}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-muted/50 px-2 py-1.5 text-center">
+                  <p className="text-[11px] text-muted-foreground">Ankomstbatteri</p>
+                  <p
+                    className="text-base font-bold tabular-nums"
+                    style={{ color: chargingStats.avgArrivalSoc != null
+                      ? chargingStats.avgArrivalSoc >= 40 ? "#10b981" : chargingStats.avgArrivalSoc >= 20 ? "#f59e0b" : "#ef4444"
+                      : undefined }}
+                  >
+                    {chargingStats.avgArrivalSoc != null ? `${Math.round(chargingStats.avgArrivalSoc)}%` : "—"}
+                  </p>
+                </div>
+              </div>
+              {chargingStats.hasChargingData && (
+                <div className="space-y-2">
+                  <StatRow label="Total laddkostnad" value={`${Math.round(chargingStats.totalChargeCost).toLocaleString("sv-SE")} kr`} />
+                  <StatRow label="Total laddenergi" value={`${chargingStats.totalEnergyKwh.toFixed(1)} kWh`} />
+                  <StatRow label="Antal laddningar" value={`${chargingStats.sessionCount}`} />
+                  {chargingStats.totalChargeCost > 0 && (
+                    <>
+                      <ProgressBar label="Hemladdning" pct={chargingStats.homeCostPct} color="#10b981" value={`${Math.round(chargingStats.homeCost)} kr`} />
+                      <ProgressBar label="Snabbladdning" pct={chargingStats.scCostPct} color="#ef4444" value={`${Math.round(chargingStats.superchargerCost)} kr`} />
+                    </>
+                  )}
+                </div>
+              )}
+              {chargingStats.lowBatteryArrivals > 0 && (
+                <p className="text-[11px] text-amber-600 flex items-center gap-1">
+                  <span>⚠</span>
+                  {chargingStats.lowBatteryArrivals} ankomst{chargingStats.lowBatteryArrivals !== 1 ? "er" : ""} under 20%
+                </p>
+              )}
+            </>
+          )}
+        </StatCard>
       </div>
     </div>
   );

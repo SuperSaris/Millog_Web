@@ -25,6 +25,10 @@ import {
   IconX,
   IconCar,
   IconCoins,
+  IconAlertTriangle,
+  IconTrash,
+  IconChevronDown,
+  IconChevronUp,
 } from "@tabler/icons-react";
 import {
   Select,
@@ -44,6 +48,7 @@ import {
   type TripRow,
   type TripTag,
 } from "./_shared";
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 
 // ── Skeleton ─────────────────────────────────────────────────
 function TripDetailSkeleton() {
@@ -83,6 +88,14 @@ export function TripDetailPage() {
   const [noteEditing, setNoteEditing] = useState(false);
   const [noteValue, setNoteValue] = useState("");
   const [isSavingNote, setIsSavingNote] = useState(false);
+  // Unmerge state
+  const [unmergeConfirm, setUnmergeConfirm] = useState(false);
+  const [unmerging, setUnmerging] = useState(false);
+  // Delete state
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  // Köranalys expand state
+  const [driveStatsOpen, setDriveStatsOpen] = useState(false);
 
   useEffect(() => {
     if (!id || !user) return;
@@ -91,7 +104,7 @@ export function TripDetailPage() {
     supabase
       .from("trips")
       .select(
-        "id, started_at, ended_at, start_address, end_address, start_lat, start_lng, end_lat, end_lng, distance_km, energy_used_kwh, cost_kr, tag, soc_start, soc_end, outside_temp_c, notes, raw_drive_state, odometer_start_km, odometer_end_km, tariff_kr_per_kwh_used, needs_review"
+        "id, started_at, ended_at, start_address, end_address, start_lat, start_lng, end_lat, end_lng, distance_km, energy_used_kwh, cost_kr, tag, soc_start, soc_end, outside_temp_c, notes, raw_drive_state, odometer_start_km, odometer_end_km, tariff_kr_per_kwh_used, needs_review, source, vehicle_id"
       )
       .eq("id", id)
       .eq("user_id", user.id)
@@ -118,20 +131,54 @@ export function TripDetailPage() {
     }
   }, [trip?.id]);
 
-  // Tag update — optimistic, reverts on error
+  // Tag update — optimistic, reverts on error; also clears needs_review
   async function handleTagChange(newTag: string) {
     if (!trip || !user || newTag === localTag) return;
     const prev = localTag;
     setLocalTag(newTag as TripTag);
     setIsSavingTag(true);
+    const updatePayload: Record<string, unknown> = { tag: newTag };
+    if (trip.needs_review && newTag !== "untagged") updatePayload.needs_review = false;
     const { error } = await supabase
       .from("trips")
-      .update({ tag: newTag })
+      .update(updatePayload)
       .eq("id", trip.id)
       .eq("user_id", user.id);
     if (error) setLocalTag(prev);
-    else setTrip(t => t ? { ...t, tag: newTag as TripTag } : t);
+    else setTrip(t => t ? { ...t, tag: newTag as TripTag, needs_review: newTag !== "untagged" ? false : t.needs_review } : t);
     setIsSavingTag(false);
+  }
+
+  // Unmerge handler
+  async function handleUnmerge() {
+    if (!trip || !user) return;
+    setUnmerging(true);
+    try {
+      const { unmergeTrips } = await import("@/lib/merge-trips");
+      await unmergeTrips(trip.id, user.id);
+      navigate(-1);
+    } catch {
+      setUnmergeConfirm(false);
+    } finally {
+      setUnmerging(false);
+    }
+  }
+
+  // Delete handler
+  async function handleDelete() {
+    if (!trip || !user) return;
+    setDeleting(true);
+    const { error } = await supabase
+      .from("trips")
+      .delete()
+      .eq("id", trip.id)
+      .eq("user_id", user.id);
+    if (!error) {
+      navigate(-1);
+    } else {
+      setDeleting(false);
+      setDeleteConfirm(false);
+    }
   }
 
   // Note save
@@ -276,6 +323,15 @@ export function TripDetailPage() {
                 {legs.length} etapper
               </Badge>
             )}
+            {trip.needs_review && (
+              <Badge
+                variant="outline"
+                className="border text-xs bg-amber-50 text-amber-700 border-amber-200 gap-1"
+              >
+                <IconAlertTriangle className="h-3 w-3" />
+                Behöver märkas
+              </Badge>
+            )}
           </div>
           <h1 className="text-xl font-bold leading-tight">
             {trip.start_address?.split(",")[0] ?? "Okänd"}{" "}
@@ -294,6 +350,69 @@ export function TripDetailPage() {
             {trip.ended_at ? ` – ${formatTime(trip.ended_at)}` : ""}
             {duration ? ` (${duration})` : ""}
           </p>
+        </div>
+        {/* ── Header action buttons ── */}
+        <div className="flex items-center gap-1.5 shrink-0 mt-0.5">
+          {/* Unmerge button — only for user_merged trips */}
+          {trip.source === "user_merged" && (
+            <>
+              {unmergeConfirm ? (
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs text-muted-foreground">Slå isär?</span>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    className="h-7 text-xs"
+                    onClick={handleUnmerge}
+                    disabled={unmerging}
+                  >
+                    {unmerging ? "…" : "Ja"}
+                  </Button>
+                  <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setUnmergeConfirm(false)} disabled={unmerging}>
+                    Avbryt
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs gap-1.5"
+                  onClick={() => setUnmergeConfirm(true)}
+                >
+                  <IconLayersLinked className="h-3.5 w-3.5" />
+                  Slå isär
+                </Button>
+              )}
+            </>
+          )}
+          {/* Delete button */}
+          {deleteConfirm ? (
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted-foreground">Ta bort?</span>
+              <Button
+                size="sm"
+                variant="destructive"
+                className="h-7 text-xs"
+                onClick={handleDelete}
+                disabled={deleting}
+              >
+                {deleting ? "…" : "Ja"}
+              </Button>
+              <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setDeleteConfirm(false)} disabled={deleting}>
+                Avbryt
+              </Button>
+            </div>
+          ) : (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+              onClick={() => setDeleteConfirm(true)}
+              title="Ta bort resa"
+            >
+              <IconTrash className="h-4 w-4" />
+            </Button>
+          )}
         </div>
       </div>
 
@@ -440,6 +559,109 @@ export function TripDetailPage() {
               </div>
             </>
           )}
+
+          {/* ⑤b Köranalys — collapsible section, only for telemetry trips with speed data */}
+          {(() => {
+            const raw = trip.raw_drive_state;
+            const speedPoints: number[] = [];
+            if (raw && Array.isArray((raw as Record<string,unknown>)["route_points"])) {
+              for (const p of (raw as Record<string,unknown>)["route_points"] as unknown[]) {
+                const pt = p as Record<string,unknown>;
+                if (typeof pt["speed_kmh"] === "number") speedPoints.push(pt["speed_kmh"] as number);
+              }
+            }
+            const hasSpeedData = speedPoints.length >= 10;
+            if (!hasSpeedData) return null;
+
+            const BANDS = [
+              { key: "city",    label: "Stad",     color: "#4FC3F7", minKmh: 0,   maxKmh: 50  },
+              { key: "mixed",   label: "Blandat",  color: "#FFB74D", minKmh: 50,  maxKmh: 90  },
+              { key: "road",    label: "Landsväg", color: "#66BB6A", minKmh: 90,  maxKmh: 110 },
+              { key: "highway", label: "Motorväg", color: "#EF5350", minKmh: 110, maxKmh: Infinity },
+            ];
+            const total = speedPoints.length;
+            const bandCounts = BANDS.map(b => ({
+              ...b,
+              count: speedPoints.filter(s => s >= b.minKmh && s < b.maxKmh).length,
+            }));
+            const pieData = bandCounts.filter(b => b.count > 0).map(b => ({ name: b.label, value: b.count, color: b.color }));
+            const maxSpeed = Math.max(...speedPoints);
+            const avgSpeed = Math.round(speedPoints.reduce((s, v) => s + v, 0) / total);
+            const idlePct = Math.round((speedPoints.filter(s => s < 3).length / total) * 100);
+            const highwayPct = Math.round(((bandCounts.find(b => b.key === "highway")?.count ?? 0) / total) * 100);
+
+            return (
+              <>
+                <button
+                  className="flex items-center justify-between w-full pt-5 pb-2 first:pt-0 group"
+                  onClick={() => setDriveStatsOpen(o => !o)}
+                >
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                    Köranalys
+                  </p>
+                  {driveStatsOpen
+                    ? <IconChevronUp className="h-3.5 w-3.5 text-muted-foreground/50" />
+                    : <IconChevronDown className="h-3.5 w-3.5 text-muted-foreground/50" />}
+                </button>
+                {driveStatsOpen && (
+                  <div className="space-y-3">
+                    {/* Stats row */}
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-3">
+                      <StatItem icon={IconGauge} label="Maxhastighet"   value={`${Math.round(maxSpeed)} km/h`} />
+                      <StatItem icon={IconGauge} label="Medelhastighet" value={`${avgSpeed} km/h`} />
+                      <StatItem icon={IconClock} label="Stillestånd"    value={`${idlePct}%`} />
+                      <StatItem icon={IconRoute} label="Motorväg"       value={`${highwayPct}%`} />
+                    </div>
+                    {/* Speed band distribution bars */}
+                    <div className="space-y-2">
+                      {bandCounts.map(band => {
+                        const pct = total > 0 ? Math.round((band.count / total) * 100) : 0;
+                        return (
+                          <div key={band.key} className="flex items-center gap-2">
+                            <span className="text-[11px] text-muted-foreground w-16 shrink-0">{band.label}</span>
+                            <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
+                              <div
+                                className="h-full rounded-full transition-all"
+                                style={{ width: `${pct}%`, backgroundColor: band.color }}
+                              />
+                            </div>
+                            <span className="text-[11px] text-muted-foreground w-8 text-right tabular-nums shrink-0">{pct}%</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {/* Mini donut chart */}
+                    {pieData.length > 0 && (
+                      <div className="flex items-center justify-center">
+                        <ResponsiveContainer width={120} height={120}>
+                          <PieChart>
+                            <Pie data={pieData} dataKey="value" cx="50%" cy="50%" innerRadius={32} outerRadius={50} paddingAngle={2} startAngle={90} endAngle={-270}>
+                              {pieData.map((entry, i) => (
+                                <Cell key={i} fill={entry.color} />
+                              ))}
+                            </Pie>
+                            <Tooltip
+                              content={({ active, payload }) => {
+                                if (!active || !payload?.length) return null;
+                                const d = payload[0]!;
+                                const pct = Math.round(((d.value as number) / total) * 100);
+                                return (
+                                  <div className="rounded-lg border bg-background px-2.5 py-1.5 shadow-md text-xs">
+                                    <p className="font-medium">{d.name}</p>
+                                    <p className="text-muted-foreground">{pct}%</p>
+                                  </div>
+                                );
+                              }}
+                            />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            );
+          })()}
 
           {/* ⑥ Anteckning */}
           <>

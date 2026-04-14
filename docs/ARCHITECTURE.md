@@ -75,11 +75,36 @@ interface AuthContextValue {
 ### Org Context Shape (nested inside Auth)
 
 ```typescript
+// src/contexts/org-context.tsx
+type OrgRole = "admin" | "driver" | "viewer";
+type MemberStatus = "invited" | "active" | "deactivated";
+
+interface Organization {
+  id: string;
+  name: string;
+  org_number: string | null;
+  billing_email: string | null;
+  settings: Record<string, unknown>;
+  created_at: string;
+}
+
+interface OrganizationMember {
+  id: string;
+  organization_id: string;
+  user_id: string;
+  role: OrgRole;
+  status: MemberStatus;
+}
+
 interface OrgContextValue {
-  org: Organization | null;   // Current organization
-  role: 'admin' | 'viewer' | null;  // Current user's role
-  members: OrgMember[];       // All org members (drivers + admins)
-  isLoading: boolean;
+  organization: Organization | null;
+  membership: OrganizationMember | null;
+  role: OrgRole | null;
+  isAdmin: boolean;
+  isFleetUser: boolean;
+  loading: boolean;
+  /** Re-fetch org data (e.g. after settings change) */
+  refresh: () => Promise<void>;
 }
 ```
 
@@ -112,12 +137,13 @@ Fleet admins don't get service-role access. They get **additive RLS policies** t
 ```
 /login              → Public (no auth required)
 /signup             → Public (no auth required)
-/privacy            → Public (no auth required)
-/dashboard/*        → Requires authenticated session
-/dashboard/settings/* → Requires role === 'admin'
-/dashboard/drivers/new → Requires role === 'admin'
-/dashboard/drivers/import → Requires role === 'admin'
+/accept-invite      → Public (no auth required)
+/dashboard/*        → Requires authenticated session (DashboardLayout auth guard)
+/dashboard/settings → Visible to all fleet users (admin-only writes enforced in UI)
+/personal/*         → Requires authenticated session (PersonalLayout auth guard)
 ```
+
+**Note:** There is no server-side route protection beyond Supabase RLS. The `DashboardLayout` component redirects unauthenticated users to `/login`. Write operations (invite driver, update org, etc.) check `isAdmin` in the UI and Edge Functions validate the JWT + org admin role server-side.
 
 ---
 
@@ -149,8 +175,8 @@ Operations that need the service role key:
 
 The client calls these as authenticated fetch requests:
 ```typescript
-const { data } = await supabase.functions.invoke('fleet-create-drivers', {
-  body: { drivers: [{ name: 'Johan', email: 'johan@company.se' }] }
+const { data } = await supabase.functions.invoke('fleet-invite-driver', {
+  body: { name: 'Johan', email: 'johan@company.se', role: 'driver' }
 });
 ```
 
@@ -171,23 +197,31 @@ The dashboard could subscribe to Supabase Realtime for live updates:
 ### Client-Side Routing (react-router-dom v7)
 
 ```
-/                    → Redirect to /dashboard (if authenticated) or /login
-/login               → LoginPage
-/signup              → SignupPage
-/privacy             → PrivacyPage
-/dashboard           → DashboardLayout (sidebar + content area)
-  /dashboard              → FleetOverview
-  /dashboard/drivers      → DriverList
-  /dashboard/drivers/:id  → DriverDetail
-  /dashboard/drivers/new  → DriverInvite
-  /dashboard/drivers/import → BulkImport
-  /dashboard/vehicles     → VehicleList
-  /dashboard/compliance   → ComplianceView
-  /dashboard/reports      → ReportsExport
-  /dashboard/settings     → OrgSettings
-  /dashboard/settings/tags → TagManagement
-  /dashboard/settings/admins → AdminManagement
-  /dashboard/settings/billing → BillingPortal
+# Auth routes
+/login               → LoginPage (via AuthLayout)
+/signup              → SignupPage (standalone — 5-step wizard)
+/accept-invite       → AcceptInvitePage (standalone)
+
+# Dashboard routes (via DashboardLayout — sidebar + content area)
+/dashboard              → DashboardPage (KPIs, charts, map, onboarding states)
+/dashboard/drivers      → DriversPage (table + invite dialog)
+/dashboard/drivers/:id  → DriverDetailPage (profile, stats, trips)
+/dashboard/vehicles     → VehiclesPage (card grid + add vehicle dialog)
+/dashboard/compliance   → CompliancePage (untagged trips + bulk tag)
+/dashboard/reports      → ReportsPage (period selector + 3 export cards)
+/dashboard/settings     → SettingsPage (5 cards: org, admins, tags, billing, language)
+
+# Personal routes (via PersonalLayout)
+/personal               → PersonalDashboardPage
+/personal/trips         → TripsPage
+/personal/trips/:id     → TripDetailPage
+/personal/statistics    → StatisticsPage
+/personal/statistics/efficiency → StatisticsEfficiencyPage
+/personal/statistics/driving    → StatisticsDrivingPage
+/personal/export        → ExportPage
+
+# Fallback
+/*                   → Redirect to /login
 ```
 
 ### SPA Hosting (Loopia)
@@ -264,3 +298,101 @@ To prevent scope creep, these are explicitly other systems' responsibilities:
 - **Individual user billing (RevenueCat)** → Mobile app
 - **Driver-facing UI** → Mobile app (Expo/React Native)
 - **Database schema management** → Millog main repo (supabase/)
+
+---
+
+## Implementation Status (May 2025)
+
+### Contexts & Providers
+
+| Provider | File | Status |
+| -------- | ---- | ------ |
+| `AuthProvider` | `src/contexts/auth-context.tsx` | ✅ Implemented — email + password login, session persistence |
+| `OrgProvider` | `src/contexts/org-context.tsx` | ✅ Implemented — fetches `organization_members` + `organizations` for current user; exposes `organization`, `membership`, `role`, `isAdmin`, `isFleetUser`, `loading`, `refresh()`. Organization interface includes `billing_email` and `settings` JSONB. |
+
+### Route Guards
+
+| Guard | File | Status |
+| ----- | ---- | ------ |
+| `DashboardLayout` auth guard | `src/layouts/dashboard-layout.tsx` | ✅ Redirects to `/login` if no user. No org-level guard — pages handle empty org state individually. |
+| `PersonalLayout` auth guard | `src/layouts/personal-layout.tsx` | ✅ Redirects to `/login` if no user. |
+
+### Pages — Fleet Dashboard
+
+| Screen | Route | File | Status |
+| ------ | ----- | ---- | ------ |
+| Login | `/login` | `pages/login.tsx` | ✅ Working (email + password, org/personal toggle) |
+| Signup | `/signup` | `pages/signup.tsx` | ✅ 5-step wizard — calls `fleet-create-org` Edge Function |
+| Accept Invite | `/accept-invite` | `pages/accept-invite.tsx` | ✅ UI built — requires SMTP for invite emails |
+| Dashboard Overview | `/dashboard` | `pages/dashboard/index.tsx` | ✅ KPI cards, charts, map, battery health, onboarding states (WelcomeOnboarding + GettingStartedBanner) |
+| Drivers List | `/dashboard/drivers` | `pages/dashboard/drivers.tsx` | ✅ Full CRUD: DataTable, InviteDriverDialog, status badges, deactivate/reactivate |
+| Driver Detail | `/dashboard/drivers/:id` | `pages/dashboard/driver-detail.tsx` | ✅ Profile card, stats row, assigned vehicles, trip table |
+| Vehicles | `/dashboard/vehicles` | `pages/dashboard/vehicles.tsx` | ✅ Vehicle card grid, AddVehicleDialog (VIN lookup), pool car toggle, driver assignment |
+| Compliance | `/dashboard/compliance` | `pages/dashboard/compliance.tsx` | ✅ Untagged trips table, bulk tag actions, single-trip tag buttons |
+| Reports | `/dashboard/reports` | `pages/dashboard/reports.tsx` | ✅ Period selector, 3 export cards (CSV/PDF/Skatteverket). Edge Function returns 501 — report logic not yet implemented. |
+| Settings | `/dashboard/settings` | `pages/dashboard/settings.tsx` | ✅ 5 cards: org form, admins list, tags (read-only), billing placeholder, language switcher. Visible to all fleet users — admin-only writes enforced in UI. |
+
+### Pages — Personal
+
+| Screen | Route | File | Status |
+| ------ | ----- | ---- | ------ |
+| Personal Home | `/personal` | `pages/personal/index.tsx` | ✅ Independent personal drive log |
+| Trips | `/personal/trips` | `pages/personal/trips.tsx` | ✅ Trip list with date navigation |
+| Trip Detail | `/personal/trips/:id` | `pages/personal/trip-detail.tsx` | ✅ Full trip detail page |
+| Statistics | `/personal/statistics` | `pages/personal/statistics.tsx` | ✅ Stat card overview |
+| Efficiency Detail | `/personal/statistics/efficiency` | `pages/personal/statistics-efficiency.tsx` | ✅ Charts + detail metrics |
+| Driving Detail | `/personal/statistics/driving` | `pages/personal/statistics-driving.tsx` | ✅ Charts + detail metrics |
+| Export | `/personal/export` | `pages/personal/export.tsx` | ✅ Export format selection |
+
+### Sidebar & Navigation
+
+- `app-sidebar.tsx`: 6 nav items (Översikt, Förare, Fordon, Efterlevnad, Rapporter, Inställningar) — all visible to all fleet users (no role filtering)
+- `personal-sidebar.tsx`: Personal navigation sidebar
+- `dashboard-layout.tsx`: Dynamic breadcrumbs including driver detail regex
+
+### Shared Components (non-ui)
+
+| Component | File | Purpose |
+| --------- | ---- | ------- |
+| `app-sidebar` | `src/components/app-sidebar.tsx` | Fleet sidebar with 6 nav items + org name |
+| `personal-sidebar` | `src/components/personal-sidebar.tsx` | Personal sidebar |
+| `language-switcher` | `src/components/language-switcher.tsx` | sv/en toggle |
+| `require-role` | `src/components/require-role.tsx` | Role check utility |
+| `section-cards` | `src/components/section-cards.tsx` | KPI card components |
+| `site-header` | `src/components/site-header.tsx` | Top header bar |
+| `chart-area-interactive` | `src/components/chart-area-interactive.tsx` | Recharts area chart |
+| `data-table` | `src/components/data-table.tsx` | Reusable data table |
+
+### i18n
+
+- `sv.ts` and `en.ts` contain all keys across: `common.*`, `nav.*`, `login.*`, `setup.*`, `invite.*`, `dashboard.*`, `drivers.*`, `vehicles.*`, `compliance.*`, `reports.*`, `settings.*`, `personal.*`
+
+### Backend (Supabase Edge Functions)
+
+| Function | Status | Notes |
+| -------- | ------ | ----- |
+| `fleet-create-org` | ✅ Deployed (v1) | Creates org + admin member. Needs redeployment to accept `billing_email` + `settings`. |
+| `fleet-invite-driver` | ✅ Deployed (v1) | Creates driver account with temp password. SMTP needed for invite emails. |
+| `fleet-generate-report` | ✅ Deployed (v1) | Returns 501 — scaffold only, report generation logic not implemented. |
+| `fleet-delete-org` | ✅ Ready | Permanently deletes org + CASCADE data. Best-effort telemetry offboarding for all org vehicles. Optional driver account deletion. 3-step UI confirmation required. |
+
+### Database Schema (Fleet Tables)
+
+| Table | Status | Notes |
+| ----- | ------ | ----- |
+| `organizations` | ✅ Deployed | Includes `billing_email` (text) and `settings` (jsonb NOT NULL DEFAULT '{}') |
+| `organization_members` | ✅ Deployed | Roles: admin, viewer, driver. Statuses: active, invited, deactivated |
+| `fleet_invitations` | ✅ Deployed | Tracks invitation tokens and status |
+| `organization_vehicles` | ✅ Deployed | Links vehicles to organizations |
+| `organization_vehicle_assignments` | ✅ Deployed | Assigns specific vehicles to drivers within org |
+
+### Not Built
+
+| Feature | Notes |
+| ------- | ----- |
+| Bulk CSV import | `/dashboard/drivers/import` route not created |
+| Custom tag CRUD | Tags card in settings is read-only (shows defaults) |
+| Admin add/remove | Admins card in settings is read-only |
+| Billing integration | Billing card says "Kommer snart" |
+| Compliance reminders | No email sending capability yet |
+| Report PDF generation | Edge Function scaffold only |

@@ -8,6 +8,7 @@ import {
 } from "react";
 import type { User, Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
+import { logger } from "@/lib/logger";
 
 interface AuthState {
   user: User | null;
@@ -29,13 +30,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(s);
       setUser(s?.user ?? null);
       setLoading(false);
+      logger.setUser(s?.user?.id);
+      logger.info("AuthContext", "Session restored", { hasUser: !!s?.user });
     });
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, s) => {
+    } = supabase.auth.onAuthStateChange((event, s) => {
       setSession(s);
       setUser(s?.user ?? null);
+      logger.setUser(s?.user?.id);
+      logger.info("AuthContext", "Auth state changed", { event, hasUser: !!s?.user });
     });
 
     return () => subscription.unsubscribe();
@@ -43,16 +48,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = useCallback(
     async (email: string, password: string) => {
+      logger.info("AuthContext", "Sign-in attempt");
       const { error } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
+      if (error) {
+        logger.warn("AuthContext", "Sign-in failed", { reason: error.message });
+      }
       return { error: error?.message ?? null };
     },
     [],
   );
 
   const signOut = useCallback(async () => {
+    logger.info("AuthContext", "Sign-out");
     await supabase.auth.signOut();
   }, []);
 

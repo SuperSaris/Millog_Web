@@ -1,818 +1,425 @@
 # Screens — Millog Web
 
-> Every screen the fleet admin interacts with. For each: what it shows, why it matters, what data it needs, what the empty state looks like, and what actions are available.
+> Every screen the fleet admin interacts with. Reflects the **actual implementation** as of May 2025.
 
 ---
 
 ## Table of Contents
 
 1. [Login](#1-login)
-2. [Signup](#2-signup--organization-creation)
-3. [Fleet Overview (Dashboard Home)](#3-fleet-overview--dashboard-home)
-4. [Driver List](#4-driver-list)
-5. [Driver Detail](#5-driver-detail)
-6. [Driver Invite (Single)](#6-driver-invite-single)
-7. [Bulk CSV Import](#7-bulk-csv-import)
-8. [Vehicle List](#8-vehicle-list)
-9. [Compliance View](#9-compliance-view)
-10. [Reports & Export](#10-reports--export)
-11. [Settings — Organization](#11-settings--organization)
-12. [Settings — Custom Tags](#12-settings--custom-tags)
-13. [Settings — Admins & Viewers](#13-settings--admins--viewers)
-14. [Settings — Billing](#14-settings--billing)
-15. [Privacy / Transparency Page](#15-privacy--transparency-page)
+2. [Signup — Organization Creation (5-Step Wizard)](#2-signup--organization-creation-5-step-wizard)
+3. [Accept Invite](#3-accept-invite)
+4. [Fleet Overview (Dashboard Home)](#4-fleet-overview--dashboard-home)
+5. [Driver List](#5-driver-list)
+6. [Driver Detail](#6-driver-detail)
+7. [Vehicle List](#7-vehicle-list)
+8. [Compliance View](#8-compliance-view)
+9. [Reports & Export](#9-reports--export)
+10. [Settings](#10-settings)
+11. [Personal Home](#11-personal-home)
+
+---
+
+## Implementation Status
+
+| # | Screen | Route | File | Status |
+| - | ------ | ----- | ---- | ------ |
+| 1 | Login | `/login` | `pages/login.tsx` | ✅ Working |
+| 2 | Signup Wizard | `/signup` | `pages/signup.tsx` | ✅ 5-step wizard |
+| 3 | Accept Invite | `/accept-invite` | `pages/accept-invite.tsx` | ✅ UI built (needs SMTP) |
+| 4 | Dashboard Overview | `/dashboard` | `pages/dashboard/index.tsx` | ✅ KPI cards, charts, map, onboarding states |
+| 5 | Driver List | `/dashboard/drivers` | `pages/dashboard/drivers.tsx` | ✅ Full CRUD |
+| 6 | Driver Detail | `/dashboard/drivers/:id` | `pages/dashboard/driver-detail.tsx` | ✅ Profile, stats, trips |
+| 7 | Vehicle List | `/dashboard/vehicles` | `pages/dashboard/vehicles.tsx` | ✅ Full CRUD |
+| 8 | Compliance | `/dashboard/compliance` | `pages/dashboard/compliance.tsx` | ✅ Bulk tag actions |
+| 9 | Reports | `/dashboard/reports` | `pages/dashboard/reports.tsx` | ✅ UI (Edge Function scaffold) |
+| 10 | Settings | `/dashboard/settings` | `pages/dashboard/settings.tsx` | ✅ 5 cards |
+| 11 | Personal Home | `/personal` | `pages/personal/index.tsx` | ✅ Full personal log |
+
+### Not Started
+
+| Feature | Notes |
+| ------- | ----- |
+| Bulk CSV Import | `/dashboard/drivers/import` — not built |
+| Custom Tag CRUD | Tags card in settings is read-only (shows defaults) |
+| Admin add/remove | Admins card in settings is read-only |
+| Billing integration | Billing card says "Kommer snart" |
 
 ---
 
 ## 1. Login
 
 **Route:** `/login`  
-**Auth required:** No  
-**Why it matters:** First touchpoint. Must feel trustworthy and professional.
+**File:** `pages/login.tsx`  
+**Auth required:** No
 
 ### Layout
 
-- Centered card on dark/neutral background
-- Millog logo at top
+- Centered card with Millog branding
+- Toggle between "Organisation" and "Privatperson" login modes
 - Email + password fields
 - "Logga in" primary button
-- "Glömt lösenord?" text link below
-- "Skapa nytt flottkonto" link → `/signup`
+- "Glömt lösenord?" text link
+- Organization mode shows "Skapa nytt flottkonto" link → `/signup`
 
 ### Behavior
 
-- On submit: `supabase.auth.signInWithPassword({ email, password })`
-- Success: redirect to `/dashboard`
-- Invalid credentials: inline error "Fel e-post eller lösenord"
-- Network error: inline error "Kunde inte ansluta — försök igen"
-- "Glömt lösenord?" triggers `supabase.auth.resetPasswordForEmail(email)` → shows confirmation "Återställningslänk skickad till din e-post"
-
-### Empty/Error States
-
-- No empty state (always shows form)
-- Error messages appear inline below the form, not as toasts
+- `supabase.auth.signInWithPassword({ email, password })`
+- Org login success → `/dashboard`
+- Personal login success → `/personal`
+- Error → inline error message below form
+- Forgot password → `supabase.auth.resetPasswordForEmail(email)` → toast
 
 ---
 
-## 2. Signup — Organization Creation
+## 2. Signup — Organization Creation (5-Step Wizard)
 
 **Route:** `/signup`  
-**Auth required:** No  
-**Why it matters:** This is where a company becomes a Millog fleet customer. Must be frictionless — under 2 minutes.
+**File:** `pages/signup.tsx`  
+**Auth required:** No
 
-### Layout
+### 5 Steps
 
-- Centered card, wider than login
-- Step indicator (optional — single form is fine for Phase 1)
-- Fields:
-  - **Företagsnamn** (company name) — required
-  - **Organisationsnummer** — optional, format validated (XXXXXX-XXXX)
-  - **Ditt namn** (admin's name) — required
-  - **E-post** — required, validated
-  - **Lösenord** — required, min 8 chars, strength indicator
-  - **Bekräfta lösenord** — must match
-- "Skapa flottkonto" primary button
-- "Har du redan ett konto? Logga in" link → `/login`
+| Step | Title | Fields |
+| ---- | ----- | ------ |
+| 1 — Organisation | Organisationsinformation | Företagsnamn (required), Organisationsnummer (optional, XXXXXX-XXXX), Faktura-e-post (optional) |
+| 2 — Administratör | Administratörskonto | Fullständigt namn, E-post, Lösenord, Bekräfta lösenord |
+| 3 — Synlighet | Vad förarna ser | 6 toggles: Resor, Statistik, Elkostnad, Karta, Taggning, Exportera |
+| 4 — Taggning | Restaggning | Default tag radio (Ingen/Tjänst/Pendling/Privat), Kräv taggning toggle, Egna taggar toggle |
+| 5 — Granska | Granska och skapa | Read-only summary of all 4 previous steps |
+
+### UI Details
+
+- Centered card layout (max-width 600px)
+- Progress bar: "Steg 1 av 5" with green fill
+- Back/Next navigation buttons per step
+- Each step has an info legend ("All information kan ändras senare under Inställningar.")
+- Step 3 toggles have descriptive helper text per option
+- Step 4 radio cards with description per tag option
 
 ### Behavior
 
-1. Client-side validation (all fields)
-2. `supabase.auth.signUp({ email, password, options: { data: { full_name } } })`
-3. Call Edge Function `fleet-create-org`:
-   - Creates `organizations` row
-   - Creates `organization_members` row (role = 'admin')
-   - Updates `profiles.org_id` and `profiles.org_role`
-4. Redirect to `/dashboard`
-5. Dashboard shows empty state: "Välkommen! Bjud in din första förare för att komma igång."
+1. Per-step validation (company name required on step 1, all admin fields on step 2)
+2. Step 5 "Skapa organisation" button triggers:
+   - `supabase.auth.signUp({ email, password, options: { data: { full_name } } })`
+   - Edge Function `fleet-create-org` with `{ company_name, org_number, billing_email, settings }`
+3. Success → celebration screen with next-step hints:
+   - Bjud in förare
+   - Lägg till fordon / koppla Tesla-konton
+   - Finjustera inställningar
+4. "Gå till dashboard" → `/dashboard`
 
-### Validation
+### i18n
 
-- Organisationsnummer: regex `/^\d{6}-\d{4}$/` (or 10 digits without dash)
-- Email: standard email format
-- Password: minimum 8 characters
+All keys under `setup.*` namespace (~70 keys). Both Swedish and English.
 
 ---
 
-## 3. Fleet Overview — Dashboard Home
+## 3. Accept Invite
+
+**Route:** `/accept-invite?token=...`  
+**File:** `pages/accept-invite.tsx`  
+**Auth required:** No
+
+### Behavior
+
+1. Reads `token` from URL query params
+2. Looks up `fleet_invitations` by token → gets organization name
+3. Shows welcome card: "Välkommen! Du har bjudits in till {org}."
+4. Password field → user sets their password
+5. On submit → account activated, redirect to login
+
+**Status:** UI built. Requires SMTP to be configured in Supabase for the invite email to reach the driver.
+
+---
+
+## 4. Fleet Overview — Dashboard Home
 
 **Route:** `/dashboard`  
-**Auth required:** Yes (admin or viewer)  
-**Why it matters:** The admin's daily landing page. One glance should answer: "Is everything running smoothly?"
+**File:** `pages/dashboard/index.tsx`  
+**Auth required:** Yes
 
-### Layout
+### Three States
 
-```
-┌─────────────────────────────────────────────────────────┐
-│ [Sidebar]  │  Översikt                    [Period: ▼]   │
-│            │                                             │
-│ Översikt   │  ┌──────┐ ┌──────┐ ┌──────┐               │
-│ Förare     │  │Total │ │El-   │ │Avdrags│               │
-│ Fordon     │  │km    │ │kostnad│ │bara km│               │
-│ Efterlevnad│  │12 450│ │8 320 │ │9 800  │               │
-│ Rapporter  │  │      │ │kr    │ │km     │               │
-│ Inställn.  │  └──────┘ └──────┘ └──────┘               │
-│            │  ┌──────┐ ┌──────┐ ┌──────┐               │
-│            │  │Otag- │ │Efter-│ │Aktiva │               │
-│            │  │gade  │ │levnad│ │fordon │               │
-│            │  │23    │ │87%   │ │8/10   │               │
-│            │  │resor │ │      │ │       │               │
-│            │  └──────┘ └──────┘ └──────┘               │
-│            │                                             │
-│            │  ┌─────────────────────────────────────┐   │
-│            │  │  Km per vecka (stapeldiagram)        │   │
-│            │  │  ▓▓▓▓  ▓▓▓▓▓  ▓▓▓  ▓▓▓▓▓▓  ▓▓▓▓   │   │
-│            │  │  v.14   v.15  v.16   v.17   v.18    │   │
-│            │  └─────────────────────────────────────┘   │
-│            │                                             │
-│            │  Senaste aktivitet                          │
-│            │  • Johan Svensson avslutade en resa (2 min)│
-│            │  • Lisa Karlsson taggade 3 resor (1 h)     │
-│            │  • Ny förare: Erik Nilsson (igår)          │
-└─────────────────────────────────────────────────────────┘
-```
+#### State 1: No Organization (WelcomeOnboarding)
 
-### Stat Cards (6 total)
+Shown when `organization === null` after org context loads.
 
-| Card | Value | Secondary | Source |
-| ---- | ----- | --------- | ------ |
-| **Total km** | Sum of `trips.distance_km` for period | "+12% vs förra månaden" | `trips` aggregation |
-| **Elkostnad** | Sum of `trips.cost_kr` for period | "genomsnitt X kr/mil" | `trips` aggregation |
-| **Avdragsgilla km** | Sum where `tag = 'work'` | "uppskattat avdrag: X kr" (×2.50 kr/km) | `trips` filtered |
-| **Otaggade resor** | Count where `tag = 'untagged'` | "X förare har otaggade" | `trips` count |
-| **Efterlevnadsgrad** | % trips tagged in last 30 days | "↑ 5% sedan förra veckan" | Calculated |
-| **Aktiva fordon** | Count where `telemetry_enabled = true` | "X av Y totalt" | `vehicles` + `org_vehicle_assignments` |
+- Large centered welcome card with Millog bolt icon
+- "Välkommen till Millog Fleet!" heading
+- "Du har ingen organisation kopplad till ditt konto ännu."
+- "Skapa organisation" button → `/signup`
+- 3 info cards showing the onboarding flow (invite, connect, track)
 
-### Period Selector
+#### State 2: Empty Fleet (GettingStartedBanner)
 
-- Options: **Denna månad** (default), **Förra månaden**, **I år**, **Anpassad period**
-- Custom: date range picker (shadcn Calendar + Popover)
-- All stat cards and charts update when period changes
+Shown when org exists but is newly created (few members, no vehicles).
 
-### Weekly Chart
+- Checklist card with primary styling:
+  - [ ] Bjud in din första förare → `/dashboard/drivers`
+  - [ ] Koppla ert första fordon → `/dashboard/vehicles`
+  - [x] Granska organisationsinställningar → `/dashboard/settings`
+- Auto-hides when: >1 member AND >0 vehicles
+- Appears above the normal dashboard content
 
-- Recharts `BarChart` — km driven per week for the selected period
-- Stacked by tag category (work = blue, personal = gray, commute = yellow, untagged = red outline)
-- Hover tooltip shows exact km + breakdown
+#### State 3: Normal Dashboard
 
-### Recent Activity Feed (optional, Phase 1)
+- **Greeting**: "God morgon/eftermiddag/kväll!" with month/year
+- **Untagged alert pill**: amber banner linking to `/personal`
+- **4 KPI cards** (grid, responsive):
+  - Total km (+ trip count)
+  - Tjänstekm (+ milersättning estimate)
+  - Elkostnad (this month)
+  - Otaggade resor (green "Alla taggade" if 0, red count if >0)
+- **Activity area chart**: km/day for last 30 days (Recharts AreaChart with gradient)
+- **Bottom row** (3+2 grid on large screens):
+  - **Recent trips card**: Last 5 trips with tag badges, from→to addresses, distance, cost
+  - **Vehicle status card**: Battery ring SVG with SoC%, charge state badge, parking mini-map (Leaflet)
+  - **Battery health card**: SoH%, progress bar, estimated vs original capacity, sparkline trend
 
-- Last 10 events: new trips, tags applied, new drivers added
-- Simple list with timestamp, driver name, action description
-- Low priority — can ship without this in initial MVP
+### Data Sources
 
-### Empty State
-
-First login after signup:
-
-```
-┌─────────────────────────────────────────────┐
-│                                             │
-│  🏢  Välkommen till Millog Fleet            │
-│                                             │
-│  Inga förare tillagda ännu.                 │
-│  Bjud in din första förare för att          │
-│  komma igång.                               │
-│                                             │
-│  [Bjud in förare]  [Importera CSV]          │
-│                                             │
-└─────────────────────────────────────────────┘
-```
+| Source | Query |
+| ------ | ----- |
+| Monthly trips | `trips` WHERE `user_id`, `superseded_by IS NULL`, date range |
+| Recent 5 trips | `trips` ORDER BY `started_at DESC` LIMIT 5 |
+| Vehicle | `vehicles` WHERE `user_id` LIMIT 1 |
+| Telemetry | `vehicle_telemetry_cache` WHERE `vehicle_id` + signal list |
+| Battery snapshots | `battery_snapshots` WHERE `vehicle_id` ORDER DESC LIMIT 8 |
+| Org counts | `organization_members` COUNT + `organization_vehicles` COUNT |
 
 ---
 
-## 4. Driver List
+## 5. Driver List
 
 **Route:** `/dashboard/drivers`  
-**Auth required:** Yes (admin or viewer)  
-**Why it matters:** The admin's main workspace. They come here to check who needs attention, add new drivers, and drill into individual logs.
+**File:** `pages/dashboard/drivers.tsx`  
+**Auth required:** Yes
 
 ### Layout
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  Förare                    [Sök...]  [Bjud in] [Import] │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │ Namn            E-post              Status   Otag. │ │
-│  │─────────────────────────────────────────────────── │ │
-│  │ Johan Svensson  johan@company.se    ● Aktiv    0   │ │
-│  │ Lisa Karlsson   lisa@company.se     ● Aktiv    5   │ │
-│  │ Erik Nilsson    erik@company.se     ○ Ej park. 0   │ │
-│  │ Anna Lindgren   anna@company.se     ● Aktiv    12  │ │
-│  │ Karl Persson    karl@company.se     ◌ Inaktiv  -   │ │
-│  └────────────────────────────────────────────────────┘ │
-│                                                          │
-│  Visar 5 av 30 förare                    [← 1 2 3 ... →]│
-└─────────────────────────────────────────────────────────┘
-```
-
-### Table Columns
-
-| Column | Data | Sortable | Notes |
-| ------ | ---- | -------- | ----- |
-| **Namn** | `profiles.full_name` | Yes | Click → driver detail |
-| **E-post** | `profiles.email` | Yes | |
-| **Fordon** | Vehicle display name or VIN | No | From `organization_vehicle_assignments` |
-| **Status** | Derived: Aktiv / Ej parkopplad / Inaktiv | Yes | See status logic below |
-| **Otaggade resor** | Count of `trips` where `tag = 'untagged'` | Yes | Red badge if > 0 |
-| **Senaste resa** | `MAX(trips.ended_at)` | Yes | Relative time ("2 timmar sedan") |
-| **Åtgärder** | Dropdown menu | No | Visa, Återställ lösenord, Inaktivera |
-
-### Status Logic
-
-| Status | Condition | Badge color |
-| ------ | --------- | ----------- |
-| **Aktiv** | `telemetry_enabled = true` AND member is active | Green |
-| **Ej parkopplad** | Account exists but vehicle not yet paired | Yellow |
-| **Inaktiv** | Member deactivated by admin | Gray |
-
-### Actions
-
-- **"Bjud in förare"** button → navigates to `/dashboard/drivers/new`
-- **"Importera CSV"** button → navigates to `/dashboard/drivers/import`
-- **Search** — filters by name or email (client-side for <100 drivers)
-- **Row click** → navigates to `/dashboard/drivers/:id`
-- **Actions menu per row:**
-  - "Visa detaljer" → driver detail page
-  - "Återställ lösenord" → triggers password reset email
-  - "Skicka påminnelse" → sends compliance reminder
-  - "Inaktivera" → confirmation dialog → deactivates member
-
-### Empty State
-
-```
-Inga förare tillagda ännu.
-Bjud in din första förare eller importera en lista.
-
-[Bjud in förare]  [Importera CSV]
-```
-
----
-
-## 5. Driver Detail
-
-**Route:** `/dashboard/drivers/:id`  
-**Auth required:** Yes (admin or viewer)  
-**Why it matters:** The per-driver deep dive. This is where the admin checks if someone is compliant, reviews their trips, and exports their körjournal.
-
-### Layout
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  ← Tillbaka till förare                                  │
-│                                                          │
-│  ┌─────────────────────────────────────────────────┐    │
-│  │  Johan Svensson                    ● Aktiv      │    │
-│  │  johan@company.se                               │    │
-│  │  Model Y Long Range — ABC 123                   │    │
-│  │  Parkopplad sedan: 2026-01-15                    │    │
-│  └─────────────────────────────────────────────────┘    │
-│                                                          │
-│  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐                   │
-│  │ Km   │ │ El-  │ │Arbete│ │Otag- │                   │
-│  │denna │ │kostnad│ │vs    │ │gade  │                   │
-│  │mån.  │ │denna │ │privat│ │resor │                   │
-│  │1 245 │ │mån.  │ │72/28%│ │  5   │                   │
-│  └──────┘ └──────┘ └──────┘ └──────┘                   │
-│                                                          │
-│  Resor                                    [Period: ▼]   │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │ Datum      Från → Till         km    kWh  kr  Tagg │ │
-│  │──────────────────────────────────────────────────── │ │
-│  │ 8 apr 08:15  Hemma → Kontoret  12,3  2,1  4   Arb │ │
-│  │ 8 apr 17:30  Kontoret → Hemma  12,5  2,3  5   Pend│ │
-│  │ 7 apr 10:00  Kontoret → Kund   45,2  7,8  16  Arb │ │
-│  │ 7 apr 14:30  Kund → Kontoret   44,8  8,1  17  Arb │ │
-│  │ 6 apr 09:00  Hemma → Kontoret  12,1  2,0  4   -   │ │
-│  └────────────────────────────────────────────────────┘ │
-│                                                          │
-│  [Exportera körjournal]  [Skicka påminnelse]            │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Header Card
-
-- Driver name, email, status badge
-- Assigned vehicle (display label or model + reg number)
-- Pairing date (`vehicles.telemetry_verified_at`)
-- Quick actions: Återställ lösenord, Skicka påminnelse, Inaktivera
-
-### Summary Stats (4 cards)
-
-| Card | Value | Notes |
-| ---- | ----- | ----- |
-| **Km denna månad** | Sum `distance_km` | Period-aware |
-| **Elkostnad denna månad** | Sum `cost_kr` | Formatted "X kr" |
-| **Arbete vs Privat** | Ratio of work/personal trips | Pie or percentage |
-| **Otaggade resor** | Count untagged | Red if > 0 |
-
-### Trip Table
-
-- Columns: Datum, Tid, Från → Till, km, kWh, Kostnad (kr), Tagg
-- Color-coded tag badge (same colors as mobile app: work=blue, personal=gray, commute=yellow, untagged=red outline)
-- Period selector: same as dashboard overview
-- Pagination: 25 trips per page
-- Sortable by date (default: newest first)
-
-### Actions
-
-- **"Exportera körjournal"** → calls `fleet-generate-report` Edge Function for this driver + selected period → downloads PDF
-- **"Skicka påminnelse"** → calls `fleet-send-reminder` → shows confirmation toast
-- **"Återställ lösenord"** → `supabase.auth.admin.resetPasswordForEmail()` via Edge Function
-- **"Inaktivera"** → confirmation dialog → deactivates member, stops counting in subscription
-
-### Empty State (driver with no trips)
-
-```
-Inga resor registrerade ännu.
-Resor loggas automatiskt när föraren kör — ingen åtgärd krävs.
-```
-
----
-
-## 6. Driver Invite (Single)
-
-**Route:** `/dashboard/drivers/new`  
-**Auth required:** Yes (admin only)  
-**Why it matters:** The most common admin action after initial setup. Must be fast and foolproof.
-
-### Layout
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  ← Tillbaka till förare                                  │
-│                                                          │
-│  Bjud in förare                                          │
-│                                                          │
-│  ┌─────────────────────────────────────────────────┐    │
-│  │  Namn    [________________________]              │    │
-│  │  E-post  [________________________]              │    │
-│  │                                                   │    │
-│  │                          [Skapa konto]            │    │
-│  └─────────────────────────────────────────────────┘    │
-│                                                          │
-│  ── After creation: ──────────────────────────────────  │
-│                                                          │
-│  ┌─────────────────────────────────────────────────┐    │
-│  │  ✓ Konto skapat                                  │    │
-│  │                                                   │    │
-│  │  Johan Svensson                                   │    │
-│  │  johan.svensson@company.se                        │    │
-│  │                                                   │    │
-│  │  Tillfälligt lösenord:                            │    │
-│  │  ┌──────────────────────────┐                     │    │
-│  │  │  Kx9#mPqR2w5L    [📋]   │                     │    │
-│  │  └──────────────────────────┘                     │    │
-│  │                                                   │    │
-│  │  Dela lösenordet med föraren via er egen          │    │
-│  │  IT-process (e-post, SMS, eller personligen).     │    │
-│  │                                                   │    │
-│  │  [Skicka inbjudningsmail]  [Bjud in en till]      │    │
-│  └─────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Behavior
-
-1. Admin enters name + email
-2. Click "Skapa konto" → calls Edge Function `fleet-create-drivers` (single mode)
-3. Edge Function:
-   - Creates Supabase Auth user with random 12-char temp password
-   - Creates `profiles` row (must_change_password = true)
-   - Creates `organization_members` row (role = 'driver')
-   - Returns `{ name, email, tempPassword }` to caller
-4. UI shows the success card with temp password + copy button
-5. **"Skicka inbjudningsmail"** — optional, sends Supabase email with App Store link (no password in email)
-6. **"Bjud in en till"** — resets form for next driver
-
-### Critical UX Decision
-
-The temp password is shown **on screen** with a copy button. This is the primary distribution path. The admin copies it and shares via their company's IT process. The email is a nice-to-have supplement, not the critical path.
-
-### Validation
-
-- Name: required, min 2 chars
-- Email: required, valid format, not already in the org
-
----
-
-## 7. Bulk CSV Import
-
-**Route:** `/dashboard/drivers/import`  
-**Auth required:** Yes (admin only)  
-**Why it matters:** The killer feature for onboarding a 30-car fleet. Without this, the admin creates 30 accounts one by one. With this: upload CSV, click confirm, done.
-
-### Layout — Step 1: Upload
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  Importera förare från CSV                               │
-│                                                          │
-│  ┌─────────────────────────────────────────────────┐    │
-│  │                                                   │    │
-│  │     Dra och släpp en CSV-fil här                   │    │
-│  │     eller klicka för att välja fil                 │    │
-│  │                                                   │    │
-│  │     Format: namn,epost (en förare per rad)        │    │
-│  │     Max 500 rader per import                       │    │
-│  │                                                   │    │
-│  └─────────────────────────────────────────────────┘    │
-│                                                          │
-│  Exempelfil:                                             │
-│  ┌──────────────────────────────────┐                   │
-│  │  namn,epost                       │                   │
-│  │  Johan Svensson,johan@company.se  │                   │
-│  │  Lisa Karlsson,lisa@company.se    │                   │
-│  └──────────────────────────────────┘                   │
-│                                                          │
-│  [Ladda ner exempelmall (.csv)]                          │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Layout — Step 2: Preview & Validate
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  Förhandsgranska import (30 förare)                      │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │  ✓  Johan Svensson    johan@company.se             │ │
-│  │  ✓  Lisa Karlsson     lisa@company.se              │ │
-│  │  ✗  [tomt namn]       erik@company.se    ← Fel     │ │
-│  │  ✗  Anna Lindgren     anna@              ← Ogiltig │ │
-│  │  ✓  Karl Persson      karl@company.se              │ │
-│  └────────────────────────────────────────────────────┘ │
-│                                                          │
-│  28 giltiga · 2 fel                                      │
-│                                                          │
-│  [Avbryt]                    [Skapa 28 konton]           │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Layout — Step 3: Results
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  Import klar — 28 av 28 konton skapade ✓                │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │  Namn             E-post              Lösenord      │ │
-│  │  Johan Svensson   johan@company.se    Kx9#mPqR [📋]│ │
-│  │  Lisa Karlsson    lisa@company.se     Ht4!nWsQ [📋]│ │
-│  │  Karl Persson     karl@company.se     Jm7&bRtY [📋]│ │
-│  │  ...                                               │ │
-│  └────────────────────────────────────────────────────┘ │
-│                                                          │
-│  [Exportera som CSV]  [Tillbaka till förare]             │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Behavior
-
-1. **Upload:** Client-side CSV parsing (use `papaparse` or native). Validate headers (`namn,epost` or `name,email`).
-2. **Preview:** Show all rows with validation status. Errors highlighted in red. Admin can proceed with only valid rows.
-3. **Create:** Call Edge Function `fleet-create-drivers` in batch mode. Show progress: "12/28 konton skapade..."
-4. **Results:** Show each created account with their temp password. "Exportera som CSV" button downloads a CSV with `namn,epost,lösenord` for the admin's records.
-
-### Edge Cases
-
-- Duplicate email in CSV → flagged in preview
-- Email already exists in Supabase → flagged in preview ("Konto finns redan")
-- Edge Function partial failure → show which succeeded and which failed
-- CSV with wrong headers → "Ogiltigt format. Förväntat: namn,epost"
-
----
-
-## 8. Vehicle List
-
-**Route:** `/dashboard/vehicles`  
-**Auth required:** Yes (admin or viewer)  
-**Why it matters:** Shows which cars are streaming telemetry, which are assigned to whom, and which are unassigned pool cars.
-
-### Layout
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  Fordon                                        [Sök...] │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │ Fordon              Modell      Förare     Status  │ │
-│  │─────────────────────────────────────────────────── │ │
-│  │ Silver MY — ABC 123  Model Y LR  J.Svensson ● Aktiv│ │
-│  │ Svart M3 — DEF 456   Model 3 P   L.Karlsson ● Aktiv│ │
-│  │ Vit MY — GHI 789     Model Y SR  (ej tilldelad) ◌  │ │
-│  │ Röd MX — JKL 012     Model X LR  E.Nilsson  ○ Ej p.│ │
-│  └────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────┘
-```
+- Page header: "Förare" + "Hantera förare i din organisation."
+- "Bjud in förare" button (admin only) → opens InviteDriverDialog
+- Card with title "Alla förare (count)"
+- Data table with rows clickable → driver detail
 
 ### Table Columns
 
 | Column | Data | Notes |
 | ------ | ---- | ----- |
-| **Fordon** | Display label or VIN | Editable inline (click to edit) |
-| **Modell** | `vehicles.model` + trim | e.g., "Model Y Long Range" |
-| **Förare** | Assigned driver name | "(ej tilldelad)" if null |
-| **Telemetri** | Last data timestamp | "2 min sedan" or "Aldrig" |
-| **Status** | telemetry_enabled state | Aktiv / Ej parkopplad / Inaktiv |
+| Namn | `profiles.full_name` | Click row → detail |
+| E-post | `profiles.email` | With mail icon |
+| Roll | `organization_members.role` | Badge: Förare/Administratör/Läsare |
+| Status | `organization_members.status` | StatusBadge component |
+| Tillagd | `invited_at` | Formatted date |
+| Åtgärder | Dropdown menu | Admin only |
 
-### Actions
+### InviteDriverDialog
 
-- **Click "Förare" cell** → opens assignment dialog (dropdown of org drivers + "Ingen" option)
-- **Click display label** → inline edit (save on blur/enter)
-- **Status badge tooltip** → shows last telemetry timestamp
+- Name, email, role (select: driver/admin/viewer)
+- Calls Edge Function `fleet-invite-driver`
+- Toast on success: "Inbjudan skickad till {email}"
+
+### Row Actions (admin)
+
+- Visa detaljer → `/dashboard/drivers/:userId`
+- Inaktivera → `UPDATE organization_members SET status = 'deactivated'`
+- Återaktivera → `UPDATE organization_members SET status = 'active'`
 
 ### Empty State
 
-```
-Inga fordon registrerade ännu.
-Fordon läggs till automatiskt när förare parkopplar sin Tesla i Millog-appen.
-```
+- User icon + "Inga förare tillagda ännu."
+- "Bjud in förare genom att klicka på knappen ovan."
 
 ---
 
-## 9. Compliance View
+## 6. Driver Detail
+
+**Route:** `/dashboard/drivers/:id`  
+**File:** `pages/dashboard/driver-detail.tsx`  
+**Auth required:** Yes
+
+### Layout
+
+- Breadcrumb: Dashboard / Förare / Förare
+- Profile header card (name, email, role badge, status badge)
+- 4 stat summary cards: km, elkostnad, work %, untagged
+- Assigned vehicles section
+- Recent trips table with tag badges
+
+---
+
+## 7. Vehicle List
+
+**Route:** `/dashboard/vehicles`  
+**File:** `pages/dashboard/vehicles.tsx`  
+**Auth required:** Yes
+
+### Layout
+
+- Page header: "Fordon" + description
+- "Lägg till fordon" button (admin only) → opens AddVehicleDialog
+- Filter tabs: Alla / Tilldelade / Otilldelade / Poolbilar
+- Vehicle card grid (1→2→3 columns)
+
+### AddVehicleDialog
+
+- **VIN** input (required, max 17 chars)
+- Display name input (optional)
+- Assign driver select (active org members)
+- Pool car checkbox
+
+**Flow:**
+1. User enters VIN → dialog searches `vehicles` table by VIN
+2. If found → creates `organization_vehicles` row linking vehicle to org
+3. If driver selected → creates `organization_vehicle_assignments` row
+4. If VIN not found → error: "Inget fordon med angivet VIN hittades."
+
+**Important:** The web dashboard does NOT create vehicles. Vehicles must first be registered via the Millog mobile app (Tesla OAuth → sync). The web only links existing vehicles to the organization.
+
+### VehicleCard
+
+Each card shows:
+- Car icon + display label (or model name, or "Namnlöst fordon")
+- Trim + last 6 chars of VIN
+- Status badges: Pool car (secondary), Telemetry (green), SoC% (outline)
+- Assigned drivers with primary indicator
+- Admin actions: toggle pool, assign/unassign drivers
+
+### Empty State
+
+- Car icon + "Inga fordon kopplade ännu."
+- "Lägg till fordon genom att klicka på knappen ovan. Fordonet måste vara registrerat i Millog-appen först."
+
+---
+
+## 8. Compliance View
 
 **Route:** `/dashboard/compliance`  
-**Auth required:** Yes (admin or viewer)  
-**Why it matters:** THE reason companies buy fleet management. "Who is falling behind on trip tagging?" — answered in one screen, with one-click reminder actions.
+**File:** `pages/dashboard/compliance.tsx`  
+**Auth required:** Yes
 
 ### Layout
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  Efterlevnad                             [Period: ▼]     │
-│                                                          │
-│  ┌──────────────────────┐  ┌───────────────────────┐    │
-│  │  Flottans             │  │  Trend (6 månader)    │    │
-│  │  efterlevnadsgrad     │  │                       │    │
-│  │       87%             │  │  ──────/───────────   │    │
-│  │  ↑ 5% sedan förra mån│  │  80%  85%  87%        │    │
-│  └──────────────────────┘  └───────────────────────┘    │
-│                                                          │
-│  Förare med otaggade resor (sämst först)                 │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │ 🔴 Anna Lindgren      12 otaggade   Senast: 14 d  │ │
-│  │    sedan              [Skicka påminnelse]           │ │
-│  │ 🟡 Lisa Karlsson       5 otaggade   Senast: 3 d   │ │
-│  │    sedan              [Skicka påminnelse]           │ │
-│  │ 🟢 Johan Svensson      0 otaggade   Senast: idag  │ │
-│  │ 🟢 Karl Persson        0 otaggade   Senast: idag  │ │
-│  │ 🟢 Erik Nilsson        0 otaggade   Senast: igår  │ │
-│  └────────────────────────────────────────────────────┘ │
-│                                                          │
-│  [Skicka påminnelse till alla med otaggade]              │
-└─────────────────────────────────────────────────────────┘
-```
+- Page header: "Efterlevnad" + description
+- Untagged trips table with:
+  - Checkbox per row for bulk selection
+  - Date, driver name, route, distance columns
+  - Per-row tag badge + quick-tag buttons
+- Bulk action bar: select tag → "Tagga" button → applies to all selected
+- Success state: "Alla resor är taggade!" when no untagged trips
 
-### Color Logic
+### Data
 
-| Badge | Condition | Meaning |
-| ----- | --------- | ------- |
-| 🟢 Grön | 0 untagged trips | Fully compliant |
-| 🟡 Gul | 1–5 untagged trips | Needs attention |
-| 🔴 Röd | 6+ untagged OR last tagged > 14 days ago | Requires action |
-
-### Key Metrics
-
-- **Fleet compliance score:** `(total_tagged / total_trips) × 100` for last 30 days
-- **Per-driver untagged count:** `COUNT(*) WHERE tag = 'untagged' AND user_id = X`
-- **Last tagged:** `MAX(trips.updated_at) WHERE tag != 'untagged' AND user_id = X`
-
-### Actions
-
-- **"Skicka påminnelse" per driver** → Edge Function sends email + push notification
-- **"Skicka till alla"** → batch reminder to all non-green drivers
-- **Click driver row** → navigates to driver detail
-
-### Compliance Trend Chart
-
-- Recharts `LineChart` — monthly compliance % over last 6 months
-- Single line, area fill
-- Y-axis: 0–100%, X-axis: months
-
-### Empty State
-
-```
-Ingen resedata ännu.
-Efterlevnadsöversikten visas när förare har börjat köra.
-```
+- Joins `trips` (where `tag = 'untagged'`) with `organization_members` + `profiles`
+- Admin can directly tag trips via `UPDATE trips SET tag = ?`
 
 ---
 
-## 10. Reports & Export
+## 9. Reports & Export
 
 **Route:** `/dashboard/reports`  
-**Auth required:** Yes (admin or viewer)  
-**Why it matters:** Year-end deliverable. Everything builds toward this screen — the admin clicks export and hands a Skatteverket-ready PDF to the accountant.
+**File:** `pages/dashboard/reports.tsx`  
+**Auth required:** Yes
 
 ### Layout
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  Rapporter                                               │
-│                                                          │
-│  Period                                                  │
-│  ┌────────────────────────────────────────┐              │
-│  │ [Denna månad ▼]  eller  [2026-01-01] → [2026-04-08] │ │
-│  └────────────────────────────────────────┘              │
-│                                                          │
-│  Förare                                                  │
-│  ┌────────────────────────────────────────┐              │
-│  │ [Alla förare ▼]  eller  [Johan Svensson ▼]          │ │
-│  └────────────────────────────────────────┘              │
-│                                                          │
-│  ┌──────────────────────────────────────────┐           │
-│  │  📄  Körjournal (PDF)                     │           │
-│  │      Komplett körjournal per förare,       │           │
-│  │      Skatteverket-kompatibelt format.      │           │
-│  │                              [Ladda ner]  │           │
-│  ├──────────────────────────────────────────┤           │
-│  │  📊  Flottöversikt (PDF)                  │           │
-│  │      Alla förare, sammanfattning per       │           │
-│  │      förare + totalsumma för flottan.      │           │
-│  │                              [Ladda ner]  │           │
-│  ├──────────────────────────────────────────┤           │
-│  │  📋  Rådata (CSV)                         │           │
-│  │      Alla resor i platt CSV-format         │           │
-│  │      för Fortnox, Visma, Excel.            │           │
-│  │                              [Ladda ner]  │           │
-│  ├──────────────────────────────────────────┤           │
-│  │  🧾  Förmånsbeskattning                   │           │
-│  │      Privata km per förare per år.         │           │
-│  │      Redo för Skatteverkets beräkning.     │           │
-│  │                              [Ladda ner]  │           │
-│  └──────────────────────────────────────────┘           │
-└─────────────────────────────────────────────────────────┘
-```
+- Period selector (From / To date inputs)
+- 3 export cards:
 
-### Export Types
+| Card | Format | Description |
+| ---- | ------ | ----------- |
+| Körjournal | CSV | Complete drive log per driver |
+| Flottöversikt | PDF | Fleet summary for all vehicles and drivers |
+| Skatteunderlag | PDF | Tax-ready mileage reimbursement report |
 
-| Export | Format | Content | Edge Function |
-| ------ | ------ | ------- | ------------- |
-| **Körjournal** | PDF | Per-driver: trip log with date, from/to, km, purpose, cost. Matches Skatteverket format. | `fleet-generate-report` (type: 'korjournal') |
-| **Flottöversikt** | PDF | Cover page + per-driver summary + fleet totals. The CFO/accountant report. | `fleet-generate-report` (type: 'fleet-overview') |
-| **Rådata** | CSV | Flat file: all trips, all columns. For import to Fortnox/Visma/Excel. | Client-side generation from cached trip data |
-| **Förmånsbeskattning** | PDF | Private km per driver per year. Work/personal/commute split. | `fleet-generate-report` (type: 'formansbeskatning') |
+### Status
 
-### Behavior
-
-1. Admin selects period + driver (or "Alla förare")
-2. Clicks "Ladda ner" on desired export type
-3. For PDF: calls Edge Function → receives download URL → browser downloads
-4. For CSV: generated client-side from cached trip data → browser downloads
-5. Loading state: "Genererar rapport..." with spinner
-6. Error: "Kunde inte generera rapport — försök igen"
+UI complete. Edge Function `fleet-generate-report` is deployed but returns 501 — report generation logic not yet implemented. The cards show "Exportera" buttons that call the Edge Function and display error toast on failure.
 
 ---
 
-## 11. Settings — Organization
+## 10. Settings
 
 **Route:** `/dashboard/settings`  
-**Auth required:** Yes (admin only)  
-**Why it matters:** Basic org configuration. Set once, rarely changed.
+**File:** `pages/dashboard/settings.tsx`  
+**Auth required:** Yes (visible to all fleet users, write operations admin-only)
 
-### Fields
+### 6 Cards
 
-| Field | Type | Notes |
-| ----- | ---- | ----- |
-| **Företagsnamn** | Text input | Required |
-| **Organisationsnummer** | Text input | Format: XXXXXX-XXXX, optional |
-| **Faktura-e-post** | Email input | For Stripe invoices |
-| **Standard elpris (kr/kWh)** | Number input | Default tariff for fleet cost calculations |
-| **Momsnummer** | Text input | Optional, for invoices |
+| Card | Content | Status |
+| ---- | ------- | ------ |
+| **Organisation** | Company name + org number edit form with save button | ✅ Working (admin only writes) |
+| **Administratörer** | Read-only list of admin/viewer members (name + email + role badge) | ⚠️ Read-only (no add/remove) |
+| **Taggar** | Default tag badges displayed (Tjänst, Pendling, Privat, Otaggad) | ⚠️ Read-only (hint: "Anpassade taggar kommer snart") |
+| **Fakturering** | "Kommer snart." placeholder text | ❌ Not implemented |
+| **Språk** | Svenska / English toggle buttons | ✅ Working (all users) |
+| **Riskzon** | Red-bordered danger zone card (admin-only). "Radera organisation" button opens 3-step confirmation dialog: (1) impact summary with driver names + vehicles, (2) toggle to also delete driver accounts, (3) type org name to confirm. Calls `fleet-delete-org` Edge Function. Post-deletion: sign out + redirect to `/login`. | ✅ Working (admin only) |
 
-Save button: "Spara ändringar"
+### Data
+
+- Organization card: reads + updates `organizations` table
+- Admins card: reads `organization_members` WHERE `role IN ('admin', 'viewer')` joined with `profiles`
+- Language: writes to `localStorage` + `i18n.changeLanguage()`
 
 ---
 
-## 12. Settings — Custom Tags
+## 11. Personal Home
 
-**Route:** `/dashboard/settings/tags`  
-**Auth required:** Yes (admin only)  
-**Why it matters:** Replaces generic Work/Commute/Personal with company-specific labels. Critical for förmånsbeskattning accuracy — drivers always know exactly what to pick.
+**Route:** `/personal`  
+**File:** `pages/personal/index.tsx`  
+**Auth required:** Yes
 
 ### Layout
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  Egna taggar                                   [Ny tagg]│
-│                                                          │
-│  Dessa taggar visas i förarnas app istället för de       │
-│  generiska Work/Privat/Pendling-taggarna.                │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │ ⣿ 🔵 Firma - Jobb       Arbete (work)      [✏️][🗑️]│ │
-│  │ ⣿ 🔵 Kundbesök          Arbete (work)      [✏️][🗑️]│ │
-│  │ ⣿ 🟡 Pendling           Pendling (commute) [✏️][🗑️]│ │
-│  │ ⣿ ⚪ Privat             Privat (personal)  [✏️][🗑️]│ │
-│  └────────────────────────────────────────────────────┘ │
-│                                                          │
-│  ⣿ = drag to reorder                                    │
-└─────────────────────────────────────────────────────────┘
-```
+- 3-tab interface: Resor / Statistik / Exportera
+- Period selector: Denna vecka / Denna månad / Senaste 3 mån / I år
 
-### Tag Editor Dialog
+### Trips Tab
 
-Fields:
-- **Etikett** (label) — free text, e.g., "Kundbesök"
-- **Skattekategori** — dropdown: Arbete / Pendling / Privat (maps to work/commute/personal)
-- **Färg** — color picker (optional, for visual grouping)
-- **Standard** — toggle: "Gör till standardtagg för denna kategori"
+- Trip list sorted by date (newest first)
+- Each trip: tag badge, start→end addresses, distance, energy, cost
+- Calendar date strip for quick navigation
+- Click trip → inline expansion or trip detail
 
-### Behavior
+### Statistics Tab
 
-- Tags are stored in `organization_tags`
-- Drivers see these labels in the mobile app tag picker
-- Both `fleet_tag_id` and the standard `tag` column are written to trips (Skatteverket compat)
-- Drag-to-reorder updates `sort_order`
+- 8 customizable stat cards:
+  - Energieffektivitet, Körmönster, Skatteavdrag, Bränslebesparingar
+  - Miljöpåverkan, Laddningsbeteende, Resfördelning, Snittförbrukning
+- Click Energieffektivitet → `/statistics-efficiency` (full detail page with charts)
+- Click Körmönster → `/statistics-driving` (full detail page with charts)
+
+### Export Tab
+
+- Format selector + trip type filter
+- "Exportfunktionen är under utveckling" placeholder
 
 ---
 
-## 13. Settings — Admins & Viewers
+## Shared UI Patterns
 
-**Route:** `/dashboard/settings/admins`  
-**Auth required:** Yes (admin only)  
-**Why it matters:** Multiple people need access — HR manager, CFO, external accountant.
+### Sidebar (`app-sidebar.tsx`)
 
-### Layout
+- 6 nav items: Översikt, Förare, Fordon, Efterlevnad, Rapporter, Inställningar
+- All visible to all fleet users (no role filtering)
+- Organization name in header (falls back to "Millog")
+- User dropdown in footer: language toggle + logout
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  Administratörer och granskare            [Lägg till]    │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │ Ganim Alaydi       ganim@millog.se    Admin   [Du] │ │
-│  │ Sofia Lindqvist    sofia@company.se   Admin   [🗑️] │ │
-│  │ Anders Revisor     anders@revisor.se  Granskare[🗑️] │ │
-│  └────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────┘
-```
+### Dashboard Layout (`dashboard-layout.tsx`)
 
-### Roles
+- Auth guard → redirects to `/login` if no user
+- Dynamic breadcrumbs from URL path segments
+- Special regex for driver detail pages
+- `SidebarInset` content area
 
-- **Admin** — full access: manage drivers, settings, billing, export
-- **Granskare (viewer)** — read-only: see dashboard, trips, compliance, export. Cannot manage drivers or settings.
+### Loading States
 
-### Add Dialog
+- `Skeleton` components for all data-dependent UI
+- Table skeleton rows, card skeleton blocks, chart skeleton rectangles
 
-- Email input + role selector (Admin / Granskare)
-- If email exists in Supabase: add as `organization_member` with selected role
-- If email doesn't exist: create account (same flow as driver invite but with admin/viewer role)
+### Error Handling
 
----
-
-## 14. Settings — Billing
-
-**Route:** `/dashboard/settings/billing`  
-**Auth required:** Yes (admin only)  
-**Why it matters:** Companies need invoices with their VAT number, and they need to manage their subscription.
-
-### Layout
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  Fakturering                                             │
-│                                                          │
-│  ┌─────────────────────────────────────────────────┐    │
-│  │  Nuvarande plan: Fleet Starter                   │    │
-│  │  79 kr/förare/månad                               │    │
-│  │  10 aktiva förare = 790 kr/månad                  │    │
-│  │                                                   │    │
-│  │  Nästa faktura: 1 maj 2026                        │    │
-│  │                                                   │    │
-│  │  [Hantera betalning och fakturor]                 │    │
-│  │  (öppnar Stripe kundportal)                       │    │
-│  └─────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Behavior
-
-- Displays current plan, active driver count, monthly cost
-- "Hantera betalning" button → redirects to Stripe Customer Portal (Stripe manages payment methods, invoices, plan changes)
-- No Stripe UI embedded in the app — redirect to Stripe's hosted portal
-
----
-
-## 15. Privacy / Transparency Page
-
-**Route:** `/privacy`  
-**Auth required:** No (public)  
-**Why it matters:** GDPR compliance. Every org needs to reference this in their DPA (Data Processing Agreement). Non-negotiable.
-
-### Content (static, Swedish)
-
-1. **Vilka uppgifter vi hanterar** — Trip data (date, distance, addresses, cost, tag), driver name, email
-2. **Vem som kan se uppgifterna** — The driver (all their data), fleet admin (trip data for their org's drivers, read-only), Millog (technical access for support)
-3. **Rättslig grund** — GDPR Article 6(1)(c): legal obligation (Skatteverket körjournal requirement)
-4. **Lagringstid** — Trip data retained while org subscription is active + 7 years (Swedish tax record retention requirement)
-5. **Dina rättigheter** — Access, correction, erasure (within legal retention limits), portability
-6. **Kontakt** — privacy@millogapp.se
-
-### Design
-
-- Clean, readable, no dashboard chrome
-- Millog logo at top
-- Swedish language only
-- Static HTML/JSX — no data fetching
+- Edge Function failures → `toast.error()` via Sonner
+- Form validation errors → inline `<p className="text-destructive">` below fields
+- Empty query results → contextual empty states with helpful hints

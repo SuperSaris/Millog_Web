@@ -15,15 +15,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Separator } from "@/components/ui/separator";
 import {
   IconRoute,
-  IconFileExport,
   IconBolt,
   IconBriefcase,
   IconArrowNarrowRight,
-  IconDownload,
-  IconCash,
   IconMapPin,
   IconChevronRight,
   IconCalendar,
@@ -90,9 +86,7 @@ const TAG_STYLES: Record<TripTag, { pill: string; dot: string; line: string }> =
 };
 const getTagStyle = (tag: string) => TAG_STYLES[(tag as TripTag)] ?? TAG_STYLES.untagged;
 
-const TAG_GRAPH_COLORS: Record<TripTag, string> = {
-  work: "#3b82f6", commute: "#f59e0b", personal: "#10b981", untagged: "#9ca3af",
-};
+
 
 // ── Helpers ───────────────────────────────────────────────────
 export function getPeriodStart(period: Period): Date {
@@ -126,51 +120,6 @@ function tripDuration(started_at: string, ended_at: string | null): string {
   const h = Math.floor(mins / 60); const m = mins % 60;
   return m === 0 ? `${h} h` : `${h} h ${m} min`;
 }
-// ── Sparkline bar (inline mini chart for KPI cards) ───────────
-function Sparkline({ data, color = "#3b82f6" }: { data: number[]; color?: string }) {
-  const max = Math.max(...data, 1);
-  return (
-    <div className="flex items-end gap-0.5 h-8">
-      {data.map((v, i) => (
-        <div
-          key={i}
-          className="flex-1 rounded-sm transition-all"
-          style={{ height: `${Math.max(4, (v / max) * 100)}%`, backgroundColor: i === data.length - 1 ? color : color + "55" }}
-        />
-      ))}
-    </div>
-  );
-}
-
-// ── KPI stat card ─────────────────────────────────────────────
-function KpiCard({
-  title, value, sub, trend, sparkData, icon: Icon, color = "#3b82f6",
-}: {
-  title: string; value: string; sub?: string; trend?: { pct: number; up: boolean };
-  sparkData?: number[]; icon: React.ElementType<{ className?: string }>; color?: string;
-}) {
-  return (
-    <Card className="overflow-hidden">
-      <CardContent className="p-5">
-        <div className="flex items-start justify-between mb-3">
-          <div className="rounded-lg p-2" style={{ backgroundColor: color + "18" }}>
-            <Icon className="h-4 w-4" style={{ color }} />
-          </div>
-          {trend && (
-            <span className={`text-xs font-medium flex items-center gap-0.5 ${trend.up ? "text-emerald-600" : "text-rose-500"}`}>
-              {trend.up ? "↑" : "↓"} {Math.abs(trend.pct)}%
-            </span>
-          )}
-        </div>
-        <p className="text-sm text-muted-foreground mb-0.5">{title}</p>
-        <p className="text-2xl font-bold tracking-tight leading-none">{value}</p>
-        {sub && <p className="text-xs text-muted-foreground mt-1">{sub}</p>}
-        {sparkData && <div className="mt-3"><Sparkline data={sparkData} color={color} /></div>}
-      </CardContent>
-    </Card>
-  );
-}
-
 // ── Period selector ───────────────────────────────────────────
 function PeriodSelect({ value, onChange }: { value: Period; onChange: (p: Period) => void }) {
   const { t } = useTranslation();
@@ -326,198 +275,16 @@ export function TripsTab({ trips, loading, period, onPeriodChange, onSelect }: {
   );
 }
 
-// ── Statistics tab ────────────────────────────────────────────
-export function StatisticsTab({ trips, loading, period, onPeriodChange }: {
-  trips: TripRow[]; loading: boolean; period: Period; onPeriodChange: (p: Period) => void;
-}) {
-  const { t } = useTranslation();
-
-  const stats = useMemo(() => {
-    const totalKm   = trips.reduce((s, tr) => s + (tr.distance_km ?? 0), 0);
-    const workKm    = trips.filter(tr => tr.tag === "work" || tr.tag === "commute").reduce((s, tr) => s + (tr.distance_km ?? 0), 0);
-    const elCost    = trips.reduce((s, tr) => s + (tr.cost_kr ?? 0), 0);
-    const milerKr   = workKm * MILERSATTNING_PER_KM;
-    const totalKwh  = trips.reduce((s, tr) => s + (tr.energy_used_kwh ?? 0), 0);
-    const tagCounts: Record<TripTag, number> = { work: 0, commute: 0, personal: 0, untagged: 0 };
-    for (const tr of trips) { const tag = (tr.tag ?? "untagged") as TripTag; tagCounts[tag] = (tagCounts[tag] ?? 0) + 1; }
-    return { totalKm, workKm, elCost, milerKr, totalKwh, tagCounts };
-  }, [trips]);
-
-  const chartData = useMemo(() => {
-    const byMonth = new Map<string, { label: string; km: number }>();
-    for (const tr of trips) {
-      const d = new Date(tr.started_at);
-      const sortKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-      const label = d.toLocaleDateString("sv-SE", { month: "short" });
-      const ex = byMonth.get(sortKey);
-      byMonth.set(sortKey, { label, km: (ex?.km ?? 0) + (tr.distance_km ?? 0) });
-    }
-    return Array.from(byMonth.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([, { label, km }]) => ({ month: label, km: Math.round(km) }));
-  }, [trips]);
-
-  const sparkData = chartData.map(d => d.km);
-  const totalTrips = trips.length;
-
-  const tagRows: { key: TripTag; label: string }[] = [
-    { key: "work",     label: t("personal.tagWork")      },
-    { key: "commute",  label: t("personal.tagCommute")   },
-    { key: "personal", label: t("personal.tagPersonal")  },
-    { key: "untagged", label: t("personal.tagUntagged")  },
-  ];
-
-  if (loading) {
-    return (
-      <div className="space-y-6">
-        <PeriodSelect value={period} onChange={onPeriodChange} />
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-xl" />)}
-        </div>
-        <Skeleton className="h-60 rounded-xl" />
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-3 flex-wrap">
-        <PeriodSelect value={period} onChange={onPeriodChange} />
-      </div>
-
-      {/* KPI row */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard title={t("personal.totalKm")}        value={`${Math.round(stats.totalKm).toLocaleString("sv-SE")} km`}     sub={`${totalTrips} ${t("personal.tripsCount").toLowerCase()}`} icon={IconRoute}     color="#3b82f6" sparkData={sparkData} />
-        <KpiCard title={t("personal.workKm")}         value={`${Math.round(stats.workKm).toLocaleString("sv-SE")} km`}      sub={`${t("personal.tagWork")} + ${t("personal.tagCommute")}`}  icon={IconBriefcase} color="#8b5cf6" />
-        <KpiCard title={t("personal.electricityCost")} value={stats.elCost > 0 ? `${Math.round(stats.elCost).toLocaleString("sv-SE")} kr` : "—"} sub={stats.totalKwh > 0 ? `${stats.totalKwh.toFixed(1)} kWh totalt` : undefined} icon={IconBolt} color="#f59e0b" />
-        <KpiCard title={t("personal.milersattning")}  value={stats.milerKr > 0 ? `${Math.round(stats.milerKr).toLocaleString("sv-SE")} kr` : "—"} sub={`${MILERSATTNING_PER_KM} kr/km`} icon={IconCash} color="#10b981" />
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-3">
-        {/* Bar chart */}
-        <Card className="lg:col-span-2">
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm font-semibold">{t("personal.monthlyKm")}</CardTitle>
-              <IconTrendingUp className="h-4 w-4 text-muted-foreground" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            {chartData.length === 0 ? (
-              <div className="flex items-center justify-center h-44">
-                <p className="text-sm text-muted-foreground">{t("personal.noData")}</p>
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height={200}>
-                <AreaChart data={chartData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="blueGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%"  stopColor="#3b82f6" stopOpacity={0.18} />
-                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <XAxis dataKey="month" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11 }} axisLine={false} tickLine={false} width={40} />
-                  <Tooltip content={<ChartTooltip />} cursor={{ stroke: "hsl(240 4.8% 95.9%)", strokeWidth: 32 }} />
-                  <Area dataKey="km" stroke="#3b82f6" strokeWidth={2} fill="url(#blueGrad)" dot={{ fill: "#3b82f6", r: 3 }} activeDot={{ r: 5 }} />
-                </AreaChart>
-              </ResponsiveContainer>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Tag breakdown */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-semibold">{t("personal.tagBreakdown")}</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {tagRows.map(({ key, label }) => {
-              const count = stats.tagCounts[key] ?? 0;
-              const pct = totalTrips > 0 ? Math.round((count / totalTrips) * 100) : 0;
-              const ts = getTagStyle(key);
-              return (
-                <div key={key} className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <span className={`w-2 h-2 rounded-full ${ts.dot}`} />
-                      <span className="text-xs font-medium">{label}</span>
-                    </div>
-                    <span className="text-xs text-muted-foreground tabular-nums">{count} ({pct}%)</span>
-                  </div>
-                  <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                    <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, backgroundColor: TAG_GRAPH_COLORS[key] }} />
-                  </div>
-                </div>
-              );
-            })}
-          </CardContent>
-        </Card>
-      </div>
-    </div>
-  );
-}
-
-// ── Export tab ────────────────────────────────────────────────
-export function ExportTab({ trips, period, onPeriodChange }: { trips: TripRow[]; period: Period; onPeriodChange: (p: Period) => void }) {
-  const { t } = useTranslation();
-  const [tagFilter, setTagFilter] = useState("all");
-  const filtered = tagFilter === "work" ? trips.filter(tr => tr.tag === "work" || tr.tag === "commute") : trips;
-  const totalKm = filtered.reduce((s, tr) => s + (tr.distance_km ?? 0), 0);
-
-  return (
-    <div className="max-w-lg space-y-6">
-      <div>
-        <h3 className="text-base font-semibold">{t("personal.exportTitle")}</h3>
-        <p className="text-sm text-muted-foreground mt-1">{t("personal.exportDescription")}</p>
-      </div>
-      <div className="space-y-4">
-        <div className="space-y-1.5">
-          <label className="text-sm font-medium">Period</label>
-          <PeriodSelect value={period} onChange={onPeriodChange} />
-        </div>
-        <div className="space-y-1.5">
-          <label className="text-sm font-medium">{t("personal.exportFilterLabel")}</label>
-          <Select value={tagFilter} onValueChange={setTagFilter}>
-            <SelectTrigger className="w-48 h-8 text-sm"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">{t("personal.exportTagAll")}</SelectItem>
-              <SelectItem value="work">{t("personal.exportTagWork")}</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        {filtered.length > 0 && (
-          <p className="text-sm text-muted-foreground">
-            {filtered.length} {t("personal.exportSummaryTrips")}, {Math.round(totalKm).toLocaleString("sv-SE")} {t("personal.exportSummaryKm")}
-          </p>
-        )}
-      </div>
-      <Separator />
-      <div className="space-y-3">
-        <p className="text-sm font-medium">Format</p>
-        <div className="flex gap-3">
-          {([
-            { key: "pdf", label: "PDF", icon: IconFileExport },
-            { key: "xlsx", label: "Excel", icon: IconDownload },
-            { key: "csv", label: "CSV", icon: IconDownload },
-          ] as const).map(({ key, label, icon: Icon }) => (
-            <Button key={key} variant="outline" className="flex-1 gap-2" disabled>
-              <Icon className="h-4 w-4" />
-              {label}
-            </Button>
-          ))}
-        </div>
-      </div>
-      <div className="rounded-xl bg-muted/50 border p-4">
-        <p className="text-sm text-muted-foreground">{t("personal.exportComingSoon")}</p>
-      </div>
-    </div>
-  );
-}
-
 // ── Vehicle types ────────────────────────────────────────────
 type VehicleRow = {
   id: string; display_name: string | null; model: string | null;
   trim: string | null; battery_kwh_usable: number | null; chemistry: string | null;
 };
+
+
+
+
+
 type TelemetryRow = { signal: string; value: unknown; received_at: string };
 type SnapshotRow   = { estimated_capacity_kwh: number | null; snapped_at: string };
 

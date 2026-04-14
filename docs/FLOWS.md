@@ -2,6 +2,32 @@
 
 > The critical user journeys that define the product. Each flow describes the step-by-step experience, what triggers it, what the happy path looks like, and where things can go wrong.
 
+## Implementation Status (May 2025)
+
+| Flow | Frontend | Backend |
+| ---- | -------- | ------- |
+| 1. Fleet Admin Onboarding | ✅ `/signup` — 5-step wizard (org info, admin account, visibility settings, tag settings, review) | ✅ Edge Function `fleet-create-org` deployed (v1) |
+| 2. Single Driver Invite | ✅ InviteDriverDialog inline on `/dashboard/drivers` (name + email + role select) | ✅ Edge Function `fleet-invite-driver` deployed (v1) — SMTP needed for magic links |
+| 3. Bulk Driver Import | ❌ Not started | ❌ No Edge Function |
+| 4. Driver Activation | N/A (mobile app flow) | N/A |
+| 5. Daily Admin Check-In | ✅ Dashboard with KPIs, charts, map, onboarding states | ✅ Fleet schema deployed |
+| 6. Compliance Review | ✅ `/dashboard/compliance` with bulk tag | ✅ Fleet schema deployed |
+| 7. Monthly Export | ✅ `/dashboard/reports` with period selector | ⚠️ Edge Function `fleet-generate-report` deployed (scaffold — returns 501) |
+| 8. Year-End Tax Report | ✅ Same reports page, Skatteverket card | ⚠️ Same Edge Function (scaffold) |
+| 9. Deactivate Driver | ✅ Action in drivers table (deactivate/reactivate) | ✅ Fleet schema deployed |
+| 10. Password Reset | ✅ (Supabase built-in on login page) | ✅ |
+| 11. Custom Tag Setup | ⚠️ Tags card in settings (read-only, shows defaults) | ❌ CRUD not built yet |
+| 12. Vehicle Assignment | ✅ `/dashboard/vehicles` — AddVehicleDialog (VIN lookup), assign/unassign, pool toggle | ✅ Fleet schema deployed |
+| 13. Personal Statistics | ✅ Full detail pages (efficiency, driving patterns) | ✅ |
+| 14. Delete Organization | ✅ 3-step confirmation dialog in Settings (impact summary → account toggle → type name) | ✅ Edge Function `fleet-delete-org` ready (telemetry offboard + CASCADE delete) |
+
+**Remaining blockers:**
+- SMTP must be configured in Supabase for invite emails (Flow 2)
+- `fleet-generate-report` returns 501 — report generation logic not implemented (Flows 7–8)
+- `fleet-create-org` needs redeployment to accept `billing_email` + `settings` JSONB from the 5-step wizard
+- Bulk driver import not started (Flow 3)
+- Custom tag CRUD not built (Flow 11)
+
 ---
 
 ## Table of Contents
@@ -18,6 +44,8 @@
 10. [Password Reset](#10-password-reset)
 11. [Custom Tag Setup](#11-custom-tag-setup)
 12. [Vehicle Assignment](#12-vehicle-assignment)
+13. [Personal Statistics — Sub-page Navigation](#13-personal-statistics--sub-page-navigation)
+14. [Delete Organization](#14-delete-organization)
 
 ---
 
@@ -26,31 +54,61 @@
 **Trigger:** Company decides to use Millog for their Tesla fleet  
 **Frequency:** Once per organization  
 **Goal:** Org created, admin logged in, ready to invite drivers  
-**Target time:** Under 2 minutes
+**Target time:** Under 3 minutes
 
-### Steps
+### Steps — 5-Step Signup Wizard (`/signup`)
 
 ```
 1. Admin visits app.millogapp.se
      → Sees login page with "Skapa nytt flottkonto" link
      
 2. Clicks "Skapa nytt flottkonto" → /signup
-     → Enters: company name, org number (optional), name, email, password
+     → 5-step wizard appears with progress bar ("Steg 1 av 5")
 
-3. Clicks "Skapa flottkonto"
-     → Client validates all fields
+3. Step 1 — Organisation (Organisationsinformation)
+     → Företagsnamn (required)
+     → Organisationsnummer (optional, format XXXXXX-XXXX)
+     → Faktura-e-post (optional)
+     → Info: "All information kan ändras senare under Inställningar."
+
+4. Step 2 — Administratör (Administratörskonto)
+     → Fullständigt namn (required)
+     → E-post (required)
+     → Lösenord (required)
+     → Bekräfta lösenord (required)
+
+5. Step 3 — Synlighet (Vad förarna ser)
+     → 6 toggles controlling driver-visible features:
+       - Resor (trip list)
+       - Statistik (stats overview)
+       - Elkostnad (electricity cost)
+       - Karta (map)
+       - Taggning (tag editor)
+       - Exportera (export function)
+
+6. Step 4 — Taggning (Restaggning)
+     → Default tag radio: Ingen / Tjänst / Pendling / Privat
+     → Toggle: Kräv taggning (require drivers to tag all trips)
+     → Toggle: Egna taggar (allow custom tags)
+
+7. Step 5 — Granska (Granska och skapa)
+     → Read-only summary of all 4 previous steps
+     → "Skapa organisation" button
+
+8. On submit:
      → supabase.auth.signUp() creates auth user
-     → DB trigger creates profiles row
      → Edge Function fleet-create-org creates:
-       - organizations row
+       - organizations row (with billing_email + settings JSONB)
        - organization_members row (role = 'admin')
-       - Updates profiles.org_id + profiles.org_role
+     → Celebration screen with next-step hints:
+       - Bjud in förare
+       - Lägg till fordon / koppla Tesla-konton
+       - Finjustera inställningar
+     → "Gå till dashboard" → /dashboard
 
-4. Redirect to /dashboard
-     → Empty state: "Välkommen! Bjud in din första förare."
-     → Two CTA buttons: "Bjud in förare" and "Importera CSV"
-
-5. Admin is fully set up. No further configuration required.
+9. Dashboard shows onboarding state:
+     → GettingStartedBanner: checklist (invite drivers, add vehicles, review settings)
+     → Normal KPI dashboard appears below (initially empty)
 ```
 
 ### Error Paths
@@ -61,12 +119,13 @@
 | Weak password | "Lösenordet måste vara minst 8 tecken." |
 | Network error | "Kunde inte skapa konto — kontrollera din anslutning." |
 | Edge Function fails | "Något gick fel. Försök igen." + retry button |
+| Passwords don't match | "Lösenorden stämmer inte överens." (step 2 validation) |
 
 ### Success Criteria
 
-- Time from clicking "Skapa" to seeing the empty dashboard: < 3 seconds
+- Time from clicking "Skapa" to seeing the dashboard: < 3 seconds
 - Zero emails required before admin can start working
-- No configuration screens that must be completed first
+- All initial settings (visibility, tagging) are pre-configured — no forced config steps later
 
 ---
 
@@ -74,64 +133,50 @@
 
 **Trigger:** Admin wants to add one driver  
 **Frequency:** 1–5 times per week during initial rollout, rare after  
-**Goal:** Driver account created, temp password visible to admin  
+**Goal:** Driver account created, added to organization  
 **Target time:** Under 30 seconds
 
 ### Steps
 
 ```
 1. Admin is on /dashboard/drivers
-     → Clicks "Bjud in förare" → /dashboard/drivers/new
+     → Clicks "Bjud in förare" button → InviteDriverDialog opens (inline dialog)
 
-2. Enters driver's name and email
-     → Client validates: name ≥ 2 chars, valid email
+2. Dialog fields:
+     → Namn (name, required)
+     → E-post (email, required)
+     → Roll (select: Förare / Administratör / Läsare — defaults to Förare)
 
-3. Clicks "Skapa konto"
-     → Calls Edge Function fleet-create-drivers (single mode)
+3. Clicks "Skicka inbjudan"
+     → Calls Edge Function fleet-invite-driver with { name, email, role }
      → Edge Function:
-       a. Generates 12-char cryptographically random temp password
-       b. supabase.auth.admin.createUser({ email, password: tempPwd })
-       c. Inserts profiles row (must_change_password = true)
-       d. Inserts organization_members row (role = 'driver')
-       e. Inserts fleet_invitations row (status = 'pending')
-       f. Returns { name, email, tempPassword } to caller
+       a. Creates auth user (or finds existing)
+       b. Inserts organization_members row
+       c. Inserts fleet_invitations row (token generated)
+       d. Returns success
 
-4. UI shows success card:
-     ┌─────────────────────────────────────┐
-     │ ✓ Konto skapat                       │
-     │                                       │
-     │ Johan Svensson                        │
-     │ johan@company.se                      │
-     │                                       │
-     │ Tillfälligt lösenord:                 │
-     │ [Kx9#mPqR2w5L]  [📋 Kopiera]         │
-     │                                       │
-     │ [Skicka inbjudningsmail] [Bjud in en  │
-     │                           till]        │
-     └─────────────────────────────────────┘
+4. Toast: "Inbjudan skickad till {email}"
+     → Dialog closes
+     → Driver appears in table with status "Inbjuden"
 
-5. Admin copies temp password → shares with driver via company IT process
-
-6. Optional: clicks "Skicka inbjudningsmail"
-     → Triggers email with App Store link + instructions
-     → Password is NOT included in the email (security)
+5. Driver receives invite email (when SMTP is configured)
+     → Email contains link to /accept-invite?token=...
+     → Driver sets password → account activated → status changes to "Aktiv"
 ```
 
-### Key Design Choice
+### Current Limitations
 
-The temp password is displayed **on screen** — not emailed. This is intentional:
-- Many companies have their own credential distribution processes
-- Email delivery is unreliable (spam filters, delays)
-- The copy button is the fastest path
-- The email is supplemental, not critical
+- SMTP is not yet configured in Supabase → invite emails are not delivered
+- Admin must manually share credentials until SMTP is set up
+- The `fleet-invite-driver` Edge Function is deployed but email delivery depends on SMTP
 
 ### Error Paths
 
 | Error | Recovery |
 | ----- | -------- |
-| Email already in org | "Denna e-post finns redan i er organisation." |
-| Email exists (different org) | "Denna e-post tillhör redan ett annat konto." |
-| Edge Function timeout | "Kunde inte skapa konto — försök igen." |
+| Email already in org | Toast error: "Denna e-post finns redan i er organisation." |
+| Invalid email format | Client-side validation prevents submit |
+| Edge Function timeout | Toast error: "Kunde inte skicka inbjudan — försök igen." |
 
 ---
 
@@ -260,18 +305,36 @@ The admin doesn't need to do anything. The driver self-serves.
 **Goal:** Confirm everything is running, spot problems early  
 **Target time:** Under 60 seconds for "all clear"
 
-### The 60-Second Path
+### First-Time Experience (No Org)
+
+If the user has no organization (e.g., signed up but org creation failed):
+- Dashboard shows `WelcomeOnboarding`: "Välkommen till Millog Fleet!"
+- "Skapa organisation" button → `/signup`
+- 3 info cards explaining the flow (invite, connect, track)
+
+### New Org (Empty Fleet)
+
+If the user has an org but no drivers/vehicles yet:
+- Dashboard shows `GettingStartedBanner`: checklist card
+  - [ ] Bjud in din första förare → `/dashboard/drivers`
+  - [ ] Koppla ert första fordon → `/dashboard/vehicles`
+  - [x] Granska organisationsinställningar → `/dashboard/settings`
+- Banner auto-hides when: >1 member AND >0 vehicles
+- Normal dashboard content renders below (but empty)
+
+### The 60-Second Path (Active Fleet)
 
 ```
 1. Admin opens app.millogapp.se → auto-redirects to /dashboard
      → Already logged in (session persisted)
 
-2. Scans the 6 stat cards:
-     → "87% efterlevnad" ✓
-     → "3 otaggade resor" — acceptable
-     → "8/10 aktiva fordon" — 2 not yet paired, expected
+2. Scans the 4 KPI cards:
+     → Total km (+ trip count)
+     → Tjänstekm (+ milersättning estimate)
+     → Elkostnad (this month)
+     → Otaggade resor (green if 0, red count if >0)
 
-3. Glances at weekly km chart:
+3. Glances at activity area chart (km/day for last 30 days)
      → Normal activity levels ✓
 
 4. Checks compliance if the untagged count is high:
@@ -587,29 +650,54 @@ Standard Supabase password reset email → link to password reset page → set n
 
 ## 12. Vehicle Assignment
 
-**Trigger:** Admin wants to map a vehicle to a specific driver, or manage pool cars  
+**Trigger:** Admin wants to link an existing vehicle to the organization and assign it to a driver  
 **Frequency:** During initial setup, and when cars/drivers change  
 **Goal:** Each vehicle has a clear owner for accountability
 
-### Steps
+### Important: Web Dashboard Does NOT Create Vehicles
+
+Vehicles must first be registered via the **Millog mobile app**:
+1. Vehicle owner completes Tesla OAuth in the mobile app
+2. `tesla-token-exchange` Edge Function syncs vehicle to the `vehicles` table
+3. Virtual Key pairing is completed (requires physical proximity)
+4. Telemetry config is pushed to the car
+
+The web dashboard only **links existing vehicles** to the organization. It does not interact with the Tesla API.
+
+### Steps — Add Vehicle to Organization
 
 ```
 1. /dashboard/vehicles
+     → Clicks "Lägg till fordon" → AddVehicleDialog opens
 
-2. Find vehicle (vehicles appear automatically when drivers pair)
-     → VIN or model name shown
+2. Enters VIN (required, 17 chars)
+     → Optional display name
+     → Optional driver assignment (select from active org members)
+     → Pool car checkbox
 
-3. Click the "Förare" cell for the vehicle
-     → Dropdown shows all unassigned drivers
-     → Select driver → saved immediately
+3. Clicks "Lägg till fordon"
+     → Dialog searches vehicles table by VIN
+     → If found: creates organization_vehicles row
+     → If driver selected: creates organization_vehicle_assignments row
+     → If not found: error "Inget fordon med angivet VIN hittades.
+        Fordonet måste vara registrerat i Millog-appen först."
 
-4. Optionally: click vehicle display label
-     → Edit inline: "5YJ3E7EB5..." → "Silver Model Y — ABC 123"
-     → Saved on blur/enter
+4. Vehicle appears in card grid with:
+     → Display label (or model name, or "Namnlöst fordon")
+     → Trim + last 6 chars of VIN
+     → Status badges: Pool (secondary), Telemetry (green), SoC% (outline)
+     → Assigned driver(s) with primary indicator
+```
 
-5. For pool cars: leave "Förare" as "Ej tilldelad"
-     → Vehicle is tracked but not assigned to any single driver
-     → Multiple drivers could use it (each with their own trips)
+### Steps — Manage Existing Vehicle
+
+```
+1. On a VehicleCard, admin can:
+     → Toggle pool car status
+     → Assign/unassign drivers
+     → View telemetry status badge
+
+2. Filter tabs: Alla / Tilldelade / Otilldelade / Poolbilar
 ```
 
 ### Why Vehicle Assignment Matters
@@ -617,6 +705,183 @@ Standard Supabase password reset email → link to password reset page → set n
 - **Accountability:** "Who was driving REG-123 last Tuesday?" — the assignment answers this
 - **Reporting:** Per-driver reports include the vehicle they were assigned to
 - **Compliance:** Vehicles without an assigned driver are flagged (pool car = intentional, unassigned = problem)
+
+---
+
+## 13. Personal Statistics — Sub-page Navigation
+
+**Trigger:** Driver clicks a stat card (e.g. "Energieffektivitet" or "Körmönster") on the Statistics overview  
+**Frequency:** Daily/weekly — personal insight browsing  
+**Goal:** Drill into a detailed breakdown for one metric without losing the selected time period
+
+### Breadcrumb Trail
+
+```
+Hem  →  Statistik  →  [Detail page title]
+```
+
+The selected period (`month` / `year` / `alltime`) is forwarded via query string so the detail page always shows the same period the user was already viewing.
+
+### URL Structure
+
+```
+/personal/statistics/{slug}?period={period}
+```
+
+| Slug         | Full URL example                                  | Stat card that opens it |
+| ------------ | ------------------------------------------------- | ----------------------- |
+| `efficiency` | `/personal/statistics/efficiency?period=month`    | Energieffektivitet      |
+| `driving`    | `/personal/statistics/driving?period=month`       | Körmönster              |
+
+### Steps
+
+```
+1. /personal (Statistics tab selected)
+     → Period picker visible (Denna månad / Detta år / Alltid)
+     → Stat cards rendered — clickable cards show › chevron
+
+2. User taps a clickable stat card
+     → useNavigate("/personal/statistics/{slug}?period={currentPeriod}")
+
+3. /personal/statistics/{slug}?period={period}
+     → useSearchParams() reads period
+     → Page fetches its own data for that vehicle + period
+     → Back button: navigate("/personal/statistics")
+     → Breadcrumb: Hem › Statistik › [Page title]
+
+4. User taps Back
+     → Returns to /personal (Statistics tab, same period)
+```
+
+### Same Pattern: Trip Detail
+
+```
+/personal/trips/:id
+```
+
+Tapping a trip in the Trips tab opens the exact same sub-page pattern:
+- Trip list → click row → full trip detail page
+- Back button returns to `/personal` (Trips tab)
+
+This is the canonical "master → detail" pattern for the personal section.
+
+### How to Add a New Detail Sub-page
+
+Follow these five steps — in order:
+
+**1. Create the page** `src/pages/personal/statistics-{slug}.tsx`
+
+```tsx
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { useTranslation } from "react-i18next";
+
+export default function StatisticsSlugPage() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const period = (searchParams.get("period") ?? "month") as Period;
+
+  // Fetch your own data here using period + active vehicle
+
+  return (
+    // Back button: navigate("/personal/statistics")
+    // ALL strings: t("personal.slugXxx")  — never hardcode Swedish
+  );
+}
+```
+
+**2. Add translation keys** to `src/i18n/sv.ts` AND `src/i18n/en.ts`
+
+```ts
+// sv.ts  (source of truth)
+slugTitle: "Min nya statistik",
+slugSubtitle: "Detaljerad vy",
+// ... all strings the page uses
+
+// en.ts  (typed against TranslationStrings — TS will fail if keys are missing)
+slugTitle: "My new statistic",
+slugSubtitle: "Detailed view",
+```
+
+**3. Register the route** in `src/app.tsx`
+
+```tsx
+<Route path="statistics/slug" element={<StatisticsSlugPage />} />
+```
+
+Route must be nested inside the `<Route path="/personal">` parent.
+
+**4. Make the stat card clickable** in `src/pages/personal/_shared.tsx`
+
+```tsx
+<StatCard
+  title={t("personal.statCardSlug")}
+  href={`/personal/statistics/slug?period=${period}`}
+  // ...
+/>
+```
+
+**5. Add the stat card title key** `statCardSlug` to both `sv.ts` and `en.ts`.
+
+### i18n Rules (Non-Negotiable)
+
+- **Every string visible to the user must use `t()`** — no hardcoded Swedish, no hardcoded English.
+- Keys live under the `personal.*` namespace.
+- `sv.ts` is the source of truth. `en.ts` implements the `TranslationStrings` type — TypeScript will error if a key is present in `sv.ts` but missing from `en.ts`.
+- **Interpolated values** (numbers, units) use the `{{ variable }}` syntax: `t("personal.distDetailTrips", { count: n })`.
+- **Day names and weekday labels** must use `toLocaleDateString(undefined, { weekday: "short" })` anchored to a reference date — not translation keys. This automatically adapts to any locale.
+- **Never translate units** (km, kWh, %) — they are universal.
+
+---
+
+## 14. Delete Organization
+
+**Trigger:** Admin decides to permanently shut down the fleet organization  
+**Frequency:** Rare (once per org lifetime)  
+**Goal:** Complete removal of org, members, vehicles, assignments, invitations, tags; best-effort telemetry offboarding; optional driver account deletion  
+**Target time:** Under 1 minute
+
+### Steps — 3-Step Confirmation Dialog (Settings → Danger Zone)
+
+```
+1. Admin scrolls to "Riskzon" card at bottom of Settings page (admin-only)
+2. Clicks "Radera organisation" → dialog opens
+3. Step 1 — Impact Summary:
+   - Red warning: "Denna åtgärd är permanent. Det finns inget sätt att återställa."
+   - Lists all drivers (name + email) who will be affected
+   - Lists all vehicles (model + VIN tail) that will be disconnected
+   - Lists data that will be permanently deleted
+4. Step 2 — Account Deletion Choice:
+   - Toggle: "Radera även förarnas användarkonton" (default OFF)
+   - When ON: warning that drivers lose ALL personal data
+   - When OFF: info that drivers keep their accounts
+5. Step 3 — Type Organization Name:
+   - Must type exact org name (case-sensitive) to enable delete button
+   - "Radera organisation permanent" button (destructive, disabled until match)
+6. On confirm → calls fleet-delete-org Edge Function
+7. Edge Function:
+   a. Verifies JWT + admin role
+   b. Best-effort offboards all telemetry vehicles (push empty config via VPS proxy)
+   c. If toggle ON: deletes driver auth accounts via admin API
+   d. DELETE organization row → CASCADE handles members, vehicles, assignments, invitations, tags
+8. On success → sign out → redirect to /login → toast "Organisationen har raderats."
+```
+
+### Edge Function: `fleet-delete-org`
+
+- Auth: `--no-verify-jwt` (manual JWT verification)
+- Body: `{ delete_driver_accounts: boolean }`
+- Response: `{ success: true, offboarded_vehicles: number, deleted_accounts: number }`
+- Telemetry offboarding: parallel with 30s global timeout, 8s per vehicle, never blocks deletion
+- Uses service role for DELETE (bypasses RLS)
+
+### Safety Measures
+
+- 3-step confirmation prevents accidental deletion
+- Exact org name match required (no "type DELETE" shortcuts)
+- Admin-only — card hidden for non-admin users
+- Telemetry offboarding is best-effort — failure never blocks the deletion
+- Post-deletion sign-out prevents stale state
 
 ---
 

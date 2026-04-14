@@ -6,41 +6,36 @@
 
 ## shadcn/ui Component Inventory
 
-Components to install from shadcn/ui (b0 preset):
+Components installed from shadcn/ui:
 
-| Component | Used On | `pnpm dlx shadcn@latest add` |
-| --------- | ------- | ----- |
-| **Button** | Every screen | `button` |
-| **Card** | Dashboard stats, driver summary, vehicle cards | `card` |
-| **DataTable** | Driver list, trip list, compliance, vehicles | `table` + custom |
-| **Input** | All forms (login, signup, settings, invite) | `input` |
-| **Label** | All form fields | `label` |
-| **Dialog** | Confirm actions, invite result, tag editor | `dialog` |
-| **DropdownMenu** | Row actions, period selector, user menu | `dropdown-menu` |
-| **Select** | Tag category picker, role picker, vehicle assignment | `select` |
-| **Badge** | Tag labels, compliance status, role labels | `badge` |
-| **Tabs** | Settings page (org/tags/admins/billing) | `tabs` |
-| **Calendar** | Date range picker (reports, filters) | `calendar` |
-| **Popover** | Date picker trigger, color picker | `popover` |
-| **Separator** | Section dividers in settings, driver detail | `separator` |
-| **Avatar** | Driver initials in list and detail | `avatar` |
-| **Skeleton** | Loading states for cards, tables, charts | `skeleton` |
-| **Toast** | Success/error notifications | `sonner` |
-| **Alert** | Empty states, warnings, error messages | `alert` |
-| **Progress** | Compliance percentage bars | `progress` |
-| **Tooltip** | Icon actions, truncated text, chart hover | `tooltip` |
-| **Sheet** | Mobile nav drawer (responsive) | `sheet` |
-| **Sidebar** | Desktop navigation | `sidebar` |
-| **Breadcrumb** | Page navigation trail | `breadcrumb` |
-| **Command** | Search palette (Cmd+K) | `command` |
-| **Form** | All forms (react-hook-form + zod integration) | `form` |
-| **Switch** | Toggle settings (e.g., email notifications) | `switch` |
-| **Checkbox** | Bulk select drivers, CSV preview rows | `checkbox` |
-
-**Install command (all at once):**
-```bash
-pnpm dlx shadcn@latest add button card table input label dialog dropdown-menu select badge tabs calendar popover separator avatar skeleton sonner alert progress tooltip sheet sidebar breadcrumb command form switch checkbox
-```
+| Component | File | Used On |
+| --------- | ---- | ------- |
+| **Avatar** | `ui/avatar.tsx` | Driver initials |
+| **Badge** | `ui/badge.tsx` | Tag labels, role labels, status indicators |
+| **Breadcrumb** | `ui/breadcrumb.tsx` | Dashboard layout navigation trail |
+| **Button** | `ui/button.tsx` | Every screen |
+| **Calendar** | `ui/calendar.tsx` | Date pickers |
+| **Card** | `ui/card.tsx` | Stats, settings, vehicle cards, export cards |
+| **Chart** | `ui/chart.tsx` | Recharts theming |
+| **Checkbox** | `ui/checkbox.tsx` | Bulk select in compliance, pool car toggle |
+| **Dialog** | `ui/dialog.tsx` | Invite driver, add vehicle, confirmations |
+| **Drawer** | `ui/drawer.tsx` | Mobile drawer |
+| **DropdownMenu** | `ui/dropdown-menu.tsx` | Row actions, user menu |
+| **Form** | `ui/form.tsx` | react-hook-form integration |
+| **Input** | `ui/input.tsx` | All forms |
+| **Label** | `ui/label.tsx` | All form fields |
+| **Popover** | `ui/popover.tsx` | Date pickers, tooltips |
+| **Select** | `ui/select.tsx` | Role picker, driver assignment, tag select |
+| **Separator** | `ui/separator.tsx` | Section dividers |
+| **Sheet** | `ui/sheet.tsx` | Mobile nav drawer |
+| **Sidebar** | `ui/sidebar.tsx` | Desktop navigation |
+| **Skeleton** | `ui/skeleton.tsx` | Loading states |
+| **Sonner** | `ui/sonner.tsx` | Toast notifications |
+| **Table** | `ui/table.tsx` | Driver list, compliance, trip lists |
+| **Tabs** | `ui/tabs.tsx` | Personal home (Resor/Statistik/Exportera) |
+| **Toggle** | `ui/toggle.tsx` | Settings toggle buttons |
+| **ToggleGroup** | `ui/toggle-group.tsx` | Login mode toggle (Org/Personal) |
+| **Tooltip** | `ui/tooltip.tsx` | Icon actions, hover info |
 
 ---
 
@@ -64,21 +59,44 @@ Card
 
 ---
 
-### Signup (`/signup`)
+### Signup — 5-Step Wizard (`/signup`)
 
 ```
-Card
-├── CardHeader → "Skapa företagskonto"
-├── CardContent
-│   ├── Form
-│   │   ├── Input (Företagsnamn)
-│   │   ├── Input (Organisationsnummer, optional)
+StandaloneLayout (no sidebar)
+├── Progress bar ("Steg 1 av 5" with fill)
+├── Card (centered, max-width 600px)
+│   │
+│   ├── Step 1: Organisation
+│   │   ├── Input (Företagsnamn — required)
+│   │   ├── Input (Organisationsnummer — optional, XXXXXX-XXXX)
+│   │   ├── Input (Faktura-e-post — optional)
+│   │   └── Info text: "All information kan ändras senare..."
+│   │
+│   ├── Step 2: Administratör
+│   │   ├── Input (Fullständigt namn)
 │   │   ├── Input (E-post)
 │   │   ├── Input (Lösenord)
-│   │   ├── Input (Faktura-e-post)
-│   │   └── Button ("Skapa konto")
-│   └── Alert (error state)
-└── CardFooter → Link ("Har redan konto? Logga in")
+│   │   └── Input (Bekräfta lösenord)
+│   │
+│   ├── Step 3: Synlighet
+│   │   └── 6 × Toggle row (Resor, Statistik, Elkostnad, Karta, Taggning, Exportera)
+│   │       ├── Label + description text
+│   │       └── Switch toggle
+│   │
+│   ├── Step 4: Taggning
+│   │   ├── Radio card group (Ingen / Tjänst / Pendling / Privat)
+│   │   ├── Switch (Kräv taggning)
+│   │   └── Switch (Egna taggar)
+│   │
+│   └── Step 5: Granska
+│       ├── Read-only summary of steps 1–4
+│       └── Button ("Skapa organisation")
+│
+├── Navigation: [Tillbaka] [Nästa] buttons per step
+│
+└── Celebration screen (post-creation)
+    ├── 3 next-step hint cards
+    └── Button ("Gå till dashboard")
 ```
 
 ---
@@ -87,30 +105,47 @@ Card
 
 ```
 Page
-├── Header
-│   ├── Breadcrumb (Hem / Dashboard)
-│   ├── PeriodSelector (DropdownMenu: "Denna vecka" | "Denna månad" | "Senaste 30 dagar")
-│   └── Button ("Exportera", secondary)
+├── WelcomeOnboarding (shown when organization === null)
+│   ├── Card (centered, large)
+│   │   ├── Bolt icon
+│   │   ├── "Välkommen till Millog Fleet!" heading
+│   │   ├── "Du har ingen organisation kopplad..."
+│   │   └── Button ("Skapa organisation" → /signup)
+│   └── 3 × Info cards (invite, connect, track)
 │
-├── StatsRow (6 × Card)
-│   ├── StatCard ("Totala km")
-│   ├── StatCard ("Elkostnad")
-│   ├── StatCard ("Tjänsteresor km")
-│   ├── StatCard ("Otaggade resor", alert if > 0)
-│   ├── StatCard ("Aktiva fordon")
-│   └── StatCard ("Förare")
+├── GettingStartedBanner (shown when org exists but fleet is empty)
+│   └── Card (primary styling)
+│       ├── "Kom igång med Millog Fleet" heading
+│       └── 3 checklist items:
+│           ├── [ ] Bjud in din första förare → /dashboard/drivers
+│           ├── [ ] Koppla ert första fordon → /dashboard/vehicles
+│           └── [x] Granska organisationsinställningar → /dashboard/settings
+│       (auto-hides when: >1 member AND >0 vehicles)
 │
-├── Card → WeeklyChart
-│   └── recharts BarChart (stacked: work/personal/commute/untagged)
+├── Greeting header ("God morgon/eftermiddag/kväll!")
 │
-└── Card → RecentActivity (last 5 trips across fleet)
-    └── Table rows with driver name, from → to, km, tag badge
+├── Untagged alert pill (amber, links to /personal, shown when >0 untagged)
+│
+├── KpiSectionCards (4 × Card, responsive grid)
+│   ├── Total km (+ trip count)
+│   ├── Tjänstekm (+ milersättning estimate)
+│   ├── Elkostnad (this month)
+│   └── Otaggade resor (green if 0, red count if >0)
+│
+├── ActivityChart (Card)
+│   └── Recharts AreaChart — km/day for last 30 days, gradient fill
+│
+└── Bottom row (responsive grid)
+    ├── RecentTripsCard — last 5 trips with tag badges, from→to, distance, cost
+    ├── VehicleStatusCard — battery ring SVG, SoC%, charge state, Leaflet mini-map
+    └── BatteryHealthCard — SoH%, progress bar, capacity estimate, sparkline trend
 ```
 
 **Custom components:**
-- `<StatCard>` — Card with icon, label, value, optional trend indicator
-- `<WeeklyChart>` — recharts BarChart wrapper with Swedish labels
-- `<PeriodSelector>` — DropdownMenu with preset date ranges
+- `<KpiSectionCards>` — 4 stat cards in responsive grid (via `section-cards.tsx`)
+- `<ActivityChart>` — Recharts AreaChart with gradient (via `chart-area-interactive.tsx`)
+- `<WelcomeOnboarding>` — Full-page welcome when no org
+- `<GettingStartedBanner>` — Checklist card for new orgs
 
 ---
 
@@ -119,29 +154,33 @@ Page
 ```
 Page
 ├── Header
-│   ├── Breadcrumb
-│   ├── Input (search/filter)
-│   └── ButtonGroup
-│       ├── Button ("Bjud in förare")
-│       └── Button ("Importera CSV", secondary)
+│   ├── "Förare" heading + description
+│   └── Button ("Bjud in förare" → opens InviteDriverDialog)
 │
-└── DataTable
-    ├── Columns:
-    │   ├── Avatar + Name
-    │   ├── Email
-    │   ├── Vehicle (display_name or "Ej tilldelad")
-    │   ├── Otaggade resor (Badge: green/yellow/red)
-    │   ├── Senaste resa (relative date)
-    │   └── Actions (DropdownMenu: Visa, Skicka påminnelse, Inaktivera)
-    ├── Sortable headers (name, untagged count, last trip)
-    └── Pagination (25 per page)
+├── Card ("Alla förare ({count})")
+│   └── Table
+│       ├── Columns:
+│       │   ├── Namn (full_name)
+│       │   ├── E-post (email, with mail icon)
+│       │   ├── Roll (Badge: Förare / Administratör / Läsare)
+│       │   ├── Status (StatusBadge: Aktiv / Inbjuden / Inaktiverad)
+│       │   ├── Tillagd (formatted invited_at date)
+│       │   └── Åtgärder (DropdownMenu, admin only)
+│       ├── Clickable rows → /dashboard/drivers/:userId
+│       └── Empty state: "Inga förare tillagda ännu."
+│
+└── InviteDriverDialog (Dialog, opened by button)
+    ├── Input (Namn)
+    ├── Input (E-post)
+    ├── Select (Roll: Förare / Administratör / Läsare)
+    └── Button ("Skicka inbjudan")
+        → Calls fleet-invite-driver Edge Function
+        → Toast on success
 ```
 
 **Custom components:**
-- `<DriverDataTable>` — DataTable with driver-specific columns, sort, search
-- `<ComplianceBadge>` — Badge with color logic (0=green, 1-5=yellow, 6+=red)
-- `<InviteDriverDialog>` — Dialog with inline form (name + email) → shows temp password
-- `<BulkImportDialog>` — Multi-step Dialog: upload CSV → preview table → results
+- `<StatusBadge>` — Color-coded badge (active=green, invited=yellow, deactivated=red)
+- `<InviteDriverDialog>` — Inline Dialog with name + email + role → calls Edge Function
 
 ---
 
@@ -177,57 +216,42 @@ Page
 
 ---
 
-### Single Driver Invite (`/dashboard/drivers/invite`)
+### Vehicle List (`/dashboard/vehicles`)
 
 ```
-Dialog (or inline on driver list page)
-├── DialogHeader → "Bjud in förare"
-├── DialogContent
-│   ├── Form
-│   │   ├── Input (Namn)
-│   │   ├── Input (E-post)
-│   │   └── Button ("Skapa konto")
-│   │
-│   └── ResultCard (shown after success)
-│       ├── Alert (success, "Konto skapat!")
-│       ├── Display: name, email
-│       ├── Display: temp password (monospace, large)
-│       ├── Button ("Kopiera lösenord", copies to clipboard)
-│       └── Alert (info, "Lösenordet visas bara en gång...")
+Page
+├── Header
+│   ├── "Fordon" heading + description
+│   └── Button ("Lägg till fordon" → opens AddVehicleDialog, admin only)
 │
-└── DialogFooter → Button ("Stäng")
+├── Filter tabs: Alla / Tilldelade / Otilldelade / Poolbilar
+│
+├── Vehicle card grid (1→2→3 columns, responsive)
+│   └── VehicleCard (per vehicle)
+│       ├── Car icon + display label (or model name, or "Namnlöst fordon")
+│       ├── Trim + last 6 chars of VIN
+│       ├── Status badges: Pool (secondary), Telemetry (green), SoC% (outline)
+│       ├── Assigned drivers with primary indicator
+│       └── Admin actions: toggle pool, assign/unassign (DropdownMenu)
+│
+├── Empty state: "Inga fordon kopplade ännu."
+│   └── Hint: "Fordonet måste vara registrerat i Millog-appen först."
+│
+└── AddVehicleDialog (Dialog, opened by button)
+    ├── Input (VIN — required, max 17 chars)
+    ├── Input (Display name — optional)
+    ├── Select (Tilldela förare — optional, from active org members)
+    ├── Checkbox (Poolbil)
+    └── Button ("Lägg till fordon")
+        → Step 1: Looks up VIN in vehicles table
+        → Step 2: If found → creates organization_vehicles row
+        → Step 3: If driver selected → creates organization_vehicle_assignments row
+        → Error if VIN not found: "Inget fordon med angivet VIN hittades."
 ```
 
----
-
-### Bulk CSV Import (`/dashboard/drivers/import`)
-
-```
-Dialog (multi-step)
-
-Step 1: Upload
-├── Dropzone area (drag & drop CSV)
-├── Button ("Välj fil")
-└── Alert (info, "CSV-format: namn, e-post — en rad per förare")
-
-Step 2: Preview
-├── Table (parsed CSV rows)
-│   ├── Checkbox (select/deselect)
-│   ├── Namn
-│   ├── E-post
-│   └── Status (✓ valid / ✗ duplicate / ✗ bad email)
-├── Summary: "28 av 30 giltiga"
-└── Button ("Skapa 28 konton")
-
-Step 3: Results
-├── Table
-│   ├── Namn
-│   ├── E-post
-│   ├── Tillfälligt lösenord
-│   └── Status (✓ / ✗)
-├── Button ("Kopiera alla lösenord")
-└── Button ("Ladda ner som CSV")
-```
+**Custom components:**
+- `<VehicleCard>` — Card with vehicle info, badges, driver assignments, admin actions
+- `<AddVehicleDialog>` — VIN lookup dialog (does NOT create vehicles — only links existing ones)
 
 ---
 
@@ -236,21 +260,22 @@ Step 3: Results
 ```
 Page
 ├── Header
-│   ├── Breadcrumb
-│   └── Button ("Skicka påminnelse till alla med otaggade")
+│   ├── "Efterlevnad" heading + description
+│   └── Bulk action bar (visible when rows selected)
+│       ├── Tag select (Tjänst / Pendling / Privat / Otaggad)
+│       └── Button ("Tagga {count} resor")
 │
-├── Fleet Summary Card
-│   ├── Progress bar (tagged % of total)
-│   └── Text: "142 av 156 resor taggade (91%)"
+├── Card (untagged trips table)
+│   └── Table
+│       ├── Checkbox (per row, for bulk select)
+│       ├── Datum (formatted date)
+│       ├── Förare (driver name, from org members join)
+│       ├── Sträcka (from → to addresses)
+│       ├── Km (distance)
+│       ├── Tagg (current tag Badge + quick-tag buttons)
+│       └── Actions (per-row tag buttons)
 │
-└── DataTable (drivers sorted by untagged count DESC)
-    ├── Avatar + Name
-    ├── Otaggade resor (number, bold if > 0)
-    ├── Totala resor
-    ├── Compliance % (Progress micro-bar)
-    ├── Senast taggad (relative date or "Aldrig")
-    ├── Status (Badge: Grön/Gul/Röd)
-    └── Actions (DropdownMenu: "Visa resor", "Skicka påminnelse")
+└── Success state: "Alla resor är taggade!" (when no untagged trips)
 ```
 
 ---
@@ -259,139 +284,119 @@ Page
 
 ```
 Page
-├── Header → "Rapporter & Export"
+├── Header → "Rapporter & Export" heading + description
 │
-├── Card (Körjournal PDF)
-│   ├── Select (driver or "Alla förare")
-│   ├── DateRangePicker (start + end)
-│   └── Button ("Generera PDF")
+├── Period selector row
+│   ├── DateInput (Från)
+│   └── DateInput (Till)
 │
-├── Card (Flottöversikt PDF)
-│   ├── DateRangePicker
-│   └── Button ("Generera PDF")
+├── Card (Körjournal — CSV)
+│   ├── Description text
+│   └── Button ("Exportera")
 │
-├── Card (Rådata CSV)
-│   ├── Select (driver or alla)
-│   ├── DateRangePicker
-│   └── Button ("Ladda ner CSV")
+├── Card (Flottöversikt — PDF)
+│   ├── Description text
+│   └── Button ("Exportera")
 │
-└── Card (Förmånsbeskattning)
-    ├── Select (year: 2025, 2026)
-    ├── Select (driver or alla)
-    └── Button ("Generera rapport")
-```
+└── Card (Skatteunderlag — PDF)
+    ├── Description text
+    └── Button ("Exportera")
 
-**Custom components:**
-- `<DateRangePicker>` — Popover + Calendar (two months), returns { from, to }
-- `<ExportCard>` — Card with form fields + download button, handles loading + error states
+All 3 cards call fleet-generate-report Edge Function.
+Currently returns 501 — scaffold only.
+```
 
 ---
 
 ### Settings (`/dashboard/settings`)
 
 ```
-Page
-├── Tabs
-│   ├── Tab: Företag
-│   │   ├── Form (name, org number, billing email)
-│   │   └── Button ("Spara")
-│   │
-│   ├── Tab: Taggar
-│   │   ├── Sortable list of org tags
-│   │   │   ├── Color swatch + Label + Category badge
-│   │   │   └── Actions: Edit, Delete
-│   │   ├── Button ("Lägg till tagg")
-│   │   └── Dialog (tag editor: label, category select, color picker)
-│   │
-│   ├── Tab: Administratörer
-│   │   ├── Table (admins/viewers with role badges)
-│   │   ├── Button ("Bjud in admin")
-│   │   └── Dialog (invite admin form)
-│   │
-│   └── Tab: Fakturering
-│       ├── Current plan display
-│       ├── Billing info
-│       └── Button ("Hantera prenumeration", links to Stripe portal)
+Page (visible to all fleet users — admin-only writes enforced in UI)
+├── Header → "Inställningar" heading
+│
+├── OrganizationCard (Card)
+│   ├── Input (Organisationsnamn — editable)
+│   ├── Input (Organisationsnummer — editable)
+│   └── Button ("Spara ändringar")
+│       → Updates organizations table
+│
+├── AdminsCard (Card — read-only)
+│   └── List of admin/viewer members
+│       ├── Name + email
+│       └── Role badge (Administratör / Läsare)
+│
+├── TagsCard (Card — read-only)
+│   ├── Default tag badges (Tjänst, Pendling, Privat, Otaggad)
+│   └── Info: "Anpassade taggar kommer snart"
+│
+├── BillingCard (Card — placeholder)
+│   └── Text: "Kommer snart."
+│
+└── LanguageCard (Card)
+    └── 2 × Button (Svenska / English)
+        → Changes i18n language + localStorage
 ```
+
+**Note:** Settings is NOT tabbed — all 5 cards render vertically on a single page.
 
 ---
 
 ## Shared Custom Components
 
-These are project-specific components built on top of shadcn primitives:
+These are project-specific components (not shadcn/ui):
 
-### `<StatCard>`
+### `<SectionCards>` / `<KpiSectionCards>`
 ```
-Props: { title: string; value: string | number; icon: LucideIcon; trend?: number; alert?: boolean }
-Uses: Card, CardHeader, CardContent
-Location: src/components/stat-card.tsx
-```
-
-### `<ComplianceBadge>`
-```
-Props: { untaggedCount: number }
-Logic: 0 → green "Komplett", 1-5 → yellow "{n} otaggade", 6+ → red "{n} otaggade"
-Uses: Badge (with variant overrides)
-Location: src/components/compliance-badge.tsx
+4 KPI stat cards on dashboard overview (total km, work km, cost, untagged)
+Uses: Card
+Location: src/components/section-cards.tsx
 ```
 
-### `<DateRangePicker>`
+### `<ChartAreaInteractive>`
 ```
-Props: { value: { from: Date; to: Date }; onChange: (range) => void }
-Uses: Popover, Calendar (mode="range"), Button
-Location: src/components/date-range-picker.tsx
-```
-
-### `<PeriodSelector>`
-```
-Props: { value: string; onChange: (period) => void }
-Presets: "this-week", "this-month", "last-30-days", "last-quarter", "this-year", "custom"
-Uses: DropdownMenu
-Location: src/components/period-selector.tsx
+Recharts AreaChart with gradient fill for activity chart
+Uses: recharts AreaChart, Card
+Location: src/components/chart-area-interactive.tsx
 ```
 
-### `<DriverAvatar>`
+### `<DataTable>`
 ```
-Props: { name: string; size?: 'sm' | 'md' | 'lg' }
-Logic: Extract initials from name, deterministic color from name hash
-Uses: Avatar, AvatarFallback
-Location: src/components/driver-avatar.tsx
-```
-
-### `<TripTagBadge>`
-```
-Props: { tag: string; orgTags?: OrgTag[] }
-Logic: Maps tag to color (built-in: work=blue, personal=purple, commute=teal, untagged=gray; org tags use their custom color)
-Uses: Badge
-Location: src/components/trip-tag-badge.tsx
+Reusable data table component
+Uses: Table from shadcn/ui
+Location: src/components/data-table.tsx
 ```
 
-### `<EmptyState>`
+### `<LanguageSwitcher>`
 ```
-Props: { icon: LucideIcon; title: string; description: string; action?: { label: string; onClick: () => void } }
-Used for: No drivers, no trips, no vehicles, no reports
-Location: src/components/empty-state.tsx
+Svenska / English toggle buttons
+Uses: Button
+Location: src/components/language-switcher.tsx
 ```
 
-### `<PageHeader>`
+### `<RequireRole>`
 ```
-Props: { title: string; breadcrumbs: Array<{ label: string; href?: string }>; actions?: ReactNode }
-Uses: Breadcrumb, heading typography
-Location: src/components/page-header.tsx
+Role-check utility component for guarding content
+Location: src/components/require-role.tsx
+```
+
+### `<SiteHeader>`
+```
+Top header bar for the dashboard
+Location: src/components/site-header.tsx
 ```
 
 ---
 
 ## Layout Components
 
-### `<AppLayout>`
-Desktop: Sidebar (240px) + main content area  
+### `<DashboardLayout>` (`src/layouts/dashboard-layout.tsx`)
+Desktop: Sidebar (via `app-sidebar.tsx`) + main content area  
 Mobile (<768px): Sheet drawer + full-width content
 
 ```
-AppLayout
-├── Sidebar (desktop) / Sheet (mobile)
-│   ├── Logo
+DashboardLayout
+├── AppSidebar (desktop) / Sheet (mobile)
+│   ├── Org name in header (falls back to "Millog")
 │   ├── Nav items:
 │   │   ├── Översikt (/dashboard) — LayoutDashboard icon
 │   │   ├── Förare (/dashboard/drivers) — Users icon
@@ -399,96 +404,130 @@ AppLayout
 │   │   ├── Efterlevnad (/dashboard/compliance) — ClipboardCheck icon
 │   │   ├── Rapporter (/dashboard/reports) — FileText icon
 │   │   └── Inställningar (/dashboard/settings) — Settings icon
-│   └── Footer: user avatar + name + logout
+│   └── Footer: user dropdown (language toggle + logout)
 │
-└── Main
-    ├── Mobile header (Sheet trigger + page title)
-    └── Content (scrollable)
+├── SiteHeader (mobile)
+│
+└── SidebarInset
+    ├── Dynamic breadcrumbs (from URL path segments)
+    │   └── Special regex for driver detail pages
+    └── Outlet (page content)
 ```
 
-### `<AuthLayout>`
-Centered card on gradient background, used for login/signup/reset-password.
+Auth guard: redirects to `/login` if no user. No org-level guard.
+
+### `<PersonalLayout>` (`src/layouts/personal-layout.tsx`)
+Personal sidebar + content area for individual users.
+
+### `<AuthLayout>` (`src/layouts/auth-layout.tsx`)
+Centered card on background, used for login page only.
 
 ```
 AuthLayout
-├── Centered container (max-w-md)
-│   ├── Logo (centered above card)
-│   └── {children} (Card with form)
-└── Footer: "© Millog 2026" + privacy link
+├── Centered container
+│   └── Outlet (LoginPage card)
+└── No sidebar
 ```
+
+**Note:** Signup (`/signup`) and Accept Invite (`/accept-invite`) are standalone pages — they do NOT use AuthLayout.
 
 ---
 
 ## Chart Components (recharts)
 
-### `<WeeklyKmChart>`
+### `<ChartAreaInteractive>` (`src/components/chart-area-interactive.tsx`)
 ```
-Type: BarChart (stacked)
-Data: [{ week: "V.14", work: 320, personal: 150, commute: 80, untagged: 40 }, ...]
-Colors: Brand tag colors from Millog theme
-Uses: recharts BarChart, Bar, XAxis, YAxis, Tooltip, Legend
-Location: src/components/charts/weekly-km-chart.tsx
+Type: AreaChart with gradient fill
+Data: km/day for last 30 days
+Uses: recharts AreaChart, Area, XAxis, YAxis, Tooltip
 ```
 
-### `<ComplianceTrendChart>`
-```
-Type: LineChart
-Data: [{ month: "Jan", compliancePct: 85 }, { month: "Feb", compliancePct: 91 }, ...]
-Uses: recharts LineChart, Line, XAxis, YAxis, Tooltip
-Location: src/components/charts/compliance-trend-chart.tsx
-```
+Other charts are inlined in page components (e.g., battery sparkline in dashboard, SoC ring SVG in vehicle status card).
 
 ---
 
-## File Structure Summary
+## File Structure (Actual)
 
 ```
 src/
 ├── components/
-│   ├── ui/              ← shadcn/ui components (auto-generated)
+│   ├── ui/                        ← shadcn/ui components (auto-generated)
+│   │   ├── avatar.tsx
+│   │   ├── badge.tsx
+│   │   ├── breadcrumb.tsx
 │   │   ├── button.tsx
+│   │   ├── calendar.tsx
 │   │   ├── card.tsx
+│   │   ├── chart.tsx
+│   │   ├── checkbox.tsx
+│   │   ├── dialog.tsx
+│   │   ├── drawer.tsx
+│   │   ├── dropdown-menu.tsx
+│   │   ├── form.tsx
+│   │   ├── input.tsx
+│   │   ├── label.tsx
+│   │   ├── popover.tsx
+│   │   ├── select.tsx
+│   │   ├── separator.tsx
+│   │   ├── sheet.tsx
+│   │   ├── sidebar.tsx
+│   │   ├── skeleton.tsx
+│   │   ├── sonner.tsx
 │   │   ├── table.tsx
-│   │   └── ...
-│   ├── charts/          ← recharts wrappers
-│   │   ├── weekly-km-chart.tsx
-│   │   └── compliance-trend-chart.tsx
-│   ├── stat-card.tsx
-│   ├── compliance-badge.tsx
-│   ├── date-range-picker.tsx
-│   ├── period-selector.tsx
-│   ├── driver-avatar.tsx
-│   ├── trip-tag-badge.tsx
-│   ├── empty-state.tsx
-│   ├── page-header.tsx
-│   ├── app-layout.tsx
-│   └── auth-layout.tsx
-├── pages/               ← route pages
-│   ├── login.tsx
-│   ├── signup.tsx
-│   ├── reset-password.tsx
-│   ├── dashboard/
-│   │   ├── index.tsx      (overview)
-│   │   ├── drivers/
-│   │   │   ├── index.tsx  (list)
-│   │   │   └── [id].tsx   (detail)
-│   │   ├── vehicles.tsx
-│   │   ├── compliance.tsx
-│   │   ├── reports.tsx
-│   │   └── settings.tsx
-│   └── privacy.tsx
-├── hooks/               ← react-query hooks
-│   ├── use-fleet-stats.ts
-│   ├── use-drivers.ts
-│   ├── use-driver-trips.ts
-│   ├── use-compliance.ts
-│   ├── use-vehicles.ts
-│   ├── use-org-tags.ts
-│   └── use-auth.ts
+│   │   ├── tabs.tsx
+│   │   ├── toggle.tsx
+│   │   ├── toggle-group.tsx
+│   │   └── tooltip.tsx
+│   ├── app-sidebar.tsx            ← Fleet sidebar (6 nav items)
+│   ├── personal-sidebar.tsx       ← Personal sidebar
+│   ├── chart-area-interactive.tsx ← Recharts area chart
+│   ├── data-table.tsx             ← Reusable data table
+│   ├── language-switcher.tsx      ← sv/en toggle
+│   ├── require-role.tsx           ← Role check utility
+│   ├── section-cards.tsx          ← KPI stat cards
+│   ├── site-header.tsx            ← Top header bar
+│   ├── nav-documents.tsx          ← Nav helpers
+│   ├── nav-main.tsx
+│   ├── nav-secondary.tsx
+│   └── nav-user.tsx
+├── contexts/
+│   ├── auth-context.tsx           ← Supabase auth
+│   └── org-context.tsx            ← Organization membership
+├── hooks/
+│   └── use-mobile.ts             ← Mobile detection hook
+├── i18n/
+│   ├── index.ts                   ← i18next config
+│   ├── sv.ts                      ← Swedish strings (source of truth)
+│   └── en.ts                      ← English strings (typed)
+├── layouts/
+│   ├── auth-layout.tsx            ← Login page layout
+│   ├── dashboard-layout.tsx       ← Fleet sidebar + breadcrumbs + auth guard
+│   └── personal-layout.tsx        ← Personal sidebar + auth guard
 ├── lib/
-│   ├── supabase.ts
-│   ├── query-keys.ts
-│   └── utils.ts
-└── types/
-    └── database.ts      ← generated from Supabase
+│   ├── supabase.ts                ← Supabase client
+│   └── utils.ts                   ← Utility functions (cn, etc.)
+├── pages/
+│   ├── login.tsx
+│   ├── signup.tsx                 ← 5-step wizard
+│   ├── accept-invite.tsx
+│   ├── dashboard/
+│   │   ├── index.tsx              ← Overview (KPIs, charts, map, onboarding states)
+│   │   ├── drivers.tsx            ← Driver list + InviteDriverDialog
+│   │   ├── driver-detail.tsx      ← Driver profile + stats + trips
+│   │   ├── vehicles.tsx           ← Vehicle cards + AddVehicleDialog
+│   │   ├── compliance.tsx         ← Untagged trips + bulk tag
+│   │   ├── reports.tsx            ← 3 export cards
+│   │   └── settings.tsx           ← 5 cards (org, admins, tags, billing, language)
+│   └── personal/
+│       ├── index.tsx              ← Personal dashboard (3 tabs)
+│       ├── trips.tsx              ← Trip list
+│       ├── trip-detail.tsx        ← Trip detail
+│       ├── statistics.tsx         ← Stat card overview
+│       ├── statistics-efficiency.tsx ← Efficiency detail
+│       ├── statistics-driving.tsx    ← Driving patterns detail
+│       ├── export.tsx             ← Export page
+│       └── _shared.tsx            ← Shared personal components
+├── app.tsx                        ← Routes + providers
+├── main.tsx                       ← Entry point
+└── index.css                      ← Global styles
 ```

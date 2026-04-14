@@ -25,7 +25,8 @@ const LIST_SELECT =
   "id, started_at, ended_at, start_address, end_address, " +
   "start_lat, start_lng, end_lat, end_lng, " +
   "distance_km, energy_used_kwh, cost_kr, tag, " +
-  "soc_start, soc_end, outside_temp_c, notes";
+  "soc_start, soc_end, outside_temp_c, notes, " +
+  "source, vehicle_id, needs_review";
 
 // Aggregate select: 3 tiny columns for accurate period totals (no .range() applied to this query)
 const AGGREGATE_SELECT = "distance_km, cost_kr, tag";
@@ -47,6 +48,7 @@ export function TripsPage() {
   const [pageIndex, setPageIndex]     = useState(0);
   const [periodTotals, setPeriodTotals] = useState<PeriodTotals | null>(null);
   const [customTags, setCustomTags]   = useState<CustomTag[]>([]);
+  const [reloadKey, setReloadKey]     = useState(0);
 
   // Fetch user's custom tags once on mount
   useEffect(() => {
@@ -117,7 +119,7 @@ export function TripsPage() {
       }
       setLoading(false);
     });
-  }, [user, getRange]);
+  }, [user, getRange, reloadKey]);
 
   // Load the next page and append to the existing list
   async function loadMore() {
@@ -156,6 +158,7 @@ export function TripsPage() {
       customTags={customTags}
       customRange={customRange}
       onCustomRangeChange={setCustomRange}
+      onRefresh={() => setReloadKey(k => k + 1)}
     />
   );
 }

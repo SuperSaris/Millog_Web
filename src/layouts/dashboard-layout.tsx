@@ -2,6 +2,7 @@ import React from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "@/contexts/auth-context";
+import { useOrg } from "@/contexts/org-context";
 import { AppSidebar } from "@/components/app-sidebar";
 import {
   SidebarInset,
@@ -22,11 +23,16 @@ import { Skeleton } from "@/components/ui/skeleton";
 const breadcrumbKeys: Record<string, string> = {
   "/dashboard": "nav.overview",
   "/dashboard/drivers": "nav.drivers",
+  "/dashboard/drivers/invite": "drivers.inviteTitle",
   "/dashboard/vehicles": "nav.vehicles",
+  "/dashboard/vehicles/import": "vehicles.wizTitle",
   "/dashboard/compliance": "nav.compliance",
   "/dashboard/reports": "nav.reports",
   "/dashboard/settings": "nav.settings",
 };
+
+/** Match /dashboard/drivers/:uuid pattern for detail breadcrumbs */
+const DRIVER_DETAIL_RE = /^\/dashboard\/drivers\/[0-9a-f-]+$/i;
 
 function DashboardSkeleton() {
   return (
@@ -77,9 +83,10 @@ function DashboardSkeleton() {
 export function DashboardLayout() {
   const { t } = useTranslation();
   const { user, loading } = useAuth();
+  const { loading: orgLoading } = useOrg();
   const location = useLocation();
 
-  if (loading) {
+  if (loading || orgLoading) {
     return <DashboardSkeleton />;
   }
 
@@ -88,10 +95,16 @@ export function DashboardLayout() {
   }
 
   const pathSegments = location.pathname.split("/").filter(Boolean);
+  const isDriverDetail = DRIVER_DETAIL_RE.test(location.pathname);
   const breadcrumbs = pathSegments.map((_, i) => {
     const path = "/" + pathSegments.slice(0, i + 1).join("/");
     const key = breadcrumbKeys[path];
-    return { path, label: key ? t(key) : (pathSegments[i] ?? "") };
+    if (key) return { path, label: t(key) };
+    // Driver detail page: last segment is UUID — show "Förare" label
+    if (isDriverDetail && i === pathSegments.length - 1) {
+      return { path, label: t("drivers.detail") };
+    }
+    return { path, label: pathSegments[i] ?? "" };
   });
 
   return (

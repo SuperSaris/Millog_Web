@@ -37,21 +37,39 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 | `trips` | All trip data (km, cost, tag, addresses, timestamps) |
 | `vehicle_telemetry_cache` | Last signal timestamps (to show "last data received") |
 
-### New Tables (read + write via admin)
+### New Tables (fleet CRUD — read + write via admin)
 
 | Table | What the web portal does |
 | ----- | ------------------------ |
-| `organizations` | Read own org, update settings |
-| `organization_members` | Read all members, manage roles |
+| `organizations` | Read own org (incl. `billing_email`, `settings` JSONB), update name/org_number/billing_email |
+| `organization_members` | Read all members, invite via Edge Function, deactivate/reactivate |
 | `fleet_invitations` | Read invitations, create via Edge Function |
-| `organization_tags` | CRUD custom trip tags |
-| `organization_vehicle_assignments` | Assign vehicles to drivers |
+| `organization_vehicles` | Link existing vehicles to organization (VIN lookup) |
+| `organization_vehicle_assignments` | Assign vehicles to drivers, pool car management |
+| `organization_tags` | Read-only (CRUD not built yet — tags card shows defaults) |
 
 ---
 
 ## Queries by Screen
 
 ### Dashboard Overview (`/dashboard`)
+
+**Onboarding state detection (org member + vehicle counts):**
+```typescript
+// Used by GettingStartedBanner to decide whether to show checklist
+const { count: driverCount } = await supabase
+  .from('organization_members')
+  .select('id', { count: 'exact', head: true })
+  .eq('organization_id', orgId);
+
+const { count: vehicleCount } = await supabase
+  .from('organization_vehicles')
+  .select('id', { count: 'exact', head: true })
+  .eq('organization_id', orgId);
+
+// GettingStartedBanner shows when: driverCount <= 1 OR vehicleCount === 0
+// Hides when: driverCount > 1 AND vehicleCount > 0
+```
 
 **Fleet stats (aggregated):**
 ```typescript
@@ -109,54 +127,50 @@ const { data: chartTrips } = await supabase
 
 ### Driver List (`/dashboard/drivers`)
 
-**All drivers with status:**
+**All drivers with status and role:**
 ```typescript
-// Organization members with their profiles and vehicles
+// Organization members with their profiles
 const { data: members } = await supabase
   .from('organization_members')
   .select(`
     id,
-    role,
     user_id,
+    role,
+    status,
+    invited_at,
+    activated_at,
+    deactivated_at,
     profiles!inner (
       id,
       full_name,
       email
     )
   `)
-  .eq('org_id', orgId);
-
-// For each driver, get their vehicle and untagged trip count
-// Option A: separate queries per driver (fine for <50 drivers)
-// Option B: batch query with IN clause
-const driverUserIds = members.map(m => m.user_id);
-
-const { data: vehicles } = await supabase
-  .from('vehicles')
-  .select('id, user_id, display_name, model, vin, telemetry_enabled')
-  .in('user_id', driverUserIds);
-
-const { data: untaggedCounts } = await supabase
-  .from('trips')
-  .select('user_id')
-  .eq('tag', 'untagged')
-  .is('superseded_by', null)
-  .in('user_id', driverUserIds);
-
-// Aggregate untagged per user client-side
+  .eq('organization_id', orgId);
 ```
 
-**Last trip per driver:**
+**Invite driver:**
 ```typescript
-// For displaying "senaste resa" column
-// This could be an RPC for efficiency, or fetched per-driver
-const { data: lastTrips } = await supabase
-  .from('trips')
-  .select('user_id, ended_at')
-  .in('user_id', driverUserIds)
-  .is('superseded_by', null)
-  .order('ended_at', { ascending: false });
-// Take first per user_id client-side
+// Via Edge Function (not direct insert — needs auth user creation)
+const { data, error } = await supabase.functions.invoke('fleet-invite-driver', {
+  body: { name, email, role }
+});
+```
+
+**Deactivate driver:**
+```typescript
+await supabase
+  .from('organization_members')
+  .update({ status: 'deactivated', deactivated_at: new Date().toISOString() })
+  .eq('id', memberId);
+```
+
+**Reactivate driver:**
+```typescript
+await supabase
+  .from('organization_members')
+  .update({ status: 'active', deactivated_at: null })
+  .eq('id', memberId);
 ```
 
 ---
@@ -249,72 +263,128 @@ const { data: trendTrips } = await supabase
 
 ### Vehicle List (`/dashboard/vehicles`)
 
+**Organization vehicles with details and assignments:**
 ```typescript
-// Vehicles with their assignments
+// Get all vehicles linked to the organization
+const { data: orgVehicles } = await supabase
+  .from('organization_vehicles')
+  .select(`
+    id,
+    vehicle_id,
+    display_label,
+    is_pool,
+    vehicles!inner (
+      id, model, vin, trim, display_name, telemetry_enabled
+    )
+  `)
+  .eq('organization_id', orgId);
+
+// Get driver assignments for those vehicles
+const vehicleIds = orgVehicles?.map(v => v.vehicle_id) ?? [];
 const { data: assignments } = await supabase
   .from('organization_vehicle_assignments')
   .select(`
     id,
     vehicle_id,
-    assigned_user_id,
-    display_label,
-    vehicles!inner (
-      id, model, vin, telemetry_enabled, user_id
+    user_id,
+    is_primary,
+    profiles!inner (
+      full_name, email
     )
   `)
-  .eq('org_id', orgId);
+  .eq('organization_id', orgId)
+  .in('vehicle_id', vehicleIds);
+```
 
-// Also get vehicles that exist for org users but have no assignment yet
-const { data: allOrgVehicles } = await supabase
+**Add vehicle to organization (VIN lookup):**
+```typescript
+// Step 1: Look up vehicle by VIN in the vehicles table
+const { data: vehicle } = await supabase
   .from('vehicles')
-  .select('id, model, vin, display_name, telemetry_enabled, user_id')
-  .in('user_id', driverIds);
+  .select('id, model, vin, trim, display_name, telemetry_enabled')
+  .eq('vin', vinInput.toUpperCase())
+  .maybeSingle();
 
-// Merge: assigned vehicles + unassigned vehicles
+if (!vehicle) {
+  // Error: "Inget fordon med angivet VIN hittades."
+  return;
+}
+
+// Step 2: Create organization_vehicles link
+const { data: orgVehicle } = await supabase
+  .from('organization_vehicles')
+  .insert({
+    organization_id: orgId,
+    vehicle_id: vehicle.id,
+    display_label: displayName || null,
+    is_pool: isPoolCar,
+  })
+  .select()
+  .single();
+
+// Step 3: Optionally assign to a driver
+if (assignedDriverId) {
+  await supabase
+    .from('organization_vehicle_assignments')
+    .insert({
+      organization_id: orgId,
+      vehicle_id: vehicle.id,
+      user_id: assignedDriverId,
+      is_primary: true,
+    });
+}
 ```
 
-**Update vehicle assignment:**
+**Toggle pool car:**
 ```typescript
 await supabase
+  .from('organization_vehicles')
+  .update({ is_pool: !currentIsPool })
+  .eq('id', orgVehicleId);
+```
+
+**Assign/unassign driver:**
+```typescript
+// Assign
+await supabase
   .from('organization_vehicle_assignments')
-  .upsert({
-    org_id: orgId,
+  .insert({
+    organization_id: orgId,
     vehicle_id: vehicleId,
-    assigned_user_id: driverUserId, // or null for pool
-    display_label: label,
-    assigned_by: currentUserId,
-  }, { onConflict: 'org_id,vehicle_id' });
-```
+    user_id: driverId,
+    is_primary: true,
+  });
 
-**Update display label:**
-```typescript
+// Unassign
 await supabase
   .from('organization_vehicle_assignments')
-  .update({ display_label: newLabel })
-  .eq('id', assignmentId);
+  .delete()
+  .eq('vehicle_id', vehicleId)
+  .eq('user_id', driverId);
 ```
 
 ---
 
-### Settings — Organization
+### Settings — Organization (`/dashboard/settings`)
 
-**Read org:**
+**Read org (includes billing_email and settings):**
 ```typescript
 const { data: org } = await supabase
   .from('organizations')
   .select('*')
   .eq('id', orgId)
   .single();
+
+// org shape: { id, name, org_number, billing_email, settings, created_at, updated_at }
 ```
 
-**Update org:**
+**Update org (admin only):**
 ```typescript
 await supabase
   .from('organizations')
   .update({
     name: newName,
     org_number: newOrgNumber,
-    billing_email: newEmail,
   })
   .eq('id', orgId);
 ```
@@ -415,15 +485,30 @@ await supabase
 ### `fleet-create-org`
 
 **Purpose:** Create a new organization + first admin member  
-**Auth:** Requires valid JWT (caller must be authenticated)  
+**Auth:** Requires valid JWT (caller must be authenticated). `verify_jwt: false` in config (ES256 vs HS256 mismatch — JWT validated manually in function).  
 **Method:** POST
 
 ```typescript
 // Request
 {
-  name: string;           // Company name
-  org_number?: string;    // Organisationsnummer
-  billing_email: string;  // Invoice email
+  company_name: string;           // Company name (required)
+  org_number?: string;            // Organisationsnummer (optional)
+  billing_email?: string;         // Invoice email (optional)
+  settings?: {                    // Org settings from wizard step 3+4 (optional)
+    driver_visibility?: {
+      trips?: boolean;
+      statistics?: boolean;
+      electricity_cost?: boolean;
+      map?: boolean;
+      tagging?: boolean;
+      export?: boolean;
+    };
+    tagging?: {
+      default_tag?: string;       // 'none' | 'work' | 'commute' | 'personal'
+      require_tagging?: boolean;
+      custom_tags?: boolean;
+    };
+  };
 }
 
 // Response (200)
@@ -432,77 +517,75 @@ await supabase
     id: string;
     name: string;
     org_number: string | null;
-    billing_email: string;
+    billing_email: string | null;
+    settings: Record<string, unknown>;
   };
 }
 
 // Errors
-// 400: Missing required fields
+// 400: Missing required fields (company_name)
 // 409: User already belongs to an organization
 // 500: Internal error
 ```
 
 **Server-side logic:**
-1. Validate inputs
+1. Validate inputs (company_name required)
 2. Get caller's user_id from JWT
-3. Check caller is not already in an org (UNIQUE constraint on organization_members.user_id)
-4. INSERT organizations row (created_by = caller)
-5. INSERT organization_members row (role = 'admin')
-6. UPDATE profiles SET org_id, org_role = 'admin'
+3. Check caller is not already in an org
+4. INSERT organizations row (name, org_number, billing_email, settings)
+5. INSERT organization_members row (role = 'admin', status = 'active')
+6. Return org object
+
+**Note:** The currently deployed v1 does not accept `billing_email` or `settings` — redeployment needed.
 
 ---
 
-### `fleet-create-drivers`
+### `fleet-invite-driver`
 
-**Purpose:** Create one or more driver accounts with temp passwords  
-**Auth:** Requires valid JWT + caller must be org admin  
+**Purpose:** Invite a driver (or admin/viewer) to the organization  
+**Auth:** Requires valid JWT + caller must be org admin. `verify_jwt: false` in config.  
 **Method:** POST
 
 ```typescript
 // Request
 {
-  drivers: Array<{
-    name: string;
-    email: string;
-  }>;
+  name: string;           // Driver's full name
+  email: string;          // Driver's email
+  role?: string;          // 'driver' | 'admin' | 'viewer' (defaults to 'driver')
 }
 
 // Response (200)
 {
-  results: Array<{
-    name: string;
-    email: string;
-    tempPassword: string;    // 12-char random, shown to admin
-    success: boolean;
-    error?: string;          // if success = false
-  }>;
-  created: number;
-  failed: number;
+  success: boolean;
+  member_id: string;      // organization_members row ID
+  invitation_id: string;  // fleet_invitations row ID
 }
 
 // Errors
 // 401: Not authenticated
 // 403: Not an org admin
-// 400: Invalid input (empty array, bad email format)
+// 400: Invalid input (missing name/email)
+// 409: Email already in this organization
 ```
 
-**Server-side logic (per driver):**
-1. Generate 12-char cryptographically random password (crypto.getRandomValues)
-2. `supabase.auth.admin.createUser({ email, password: tempPwd, email_confirm: true })`
-3. INSERT profiles row (full_name, org_id, org_role = 'driver', must_change_password = true)
-4. INSERT organization_members row (role = 'driver', invited_by = caller)
-5. INSERT fleet_invitations row (status = 'accepted', created_user_id = new user id)
-6. Return { name, email, tempPassword }
-
-**Security:** Temp password is returned to the caller (the admin) once and never stored in plaintext anywhere. The admin sees it on screen with a copy button. Supabase Auth stores it as a bcrypt hash.
+**Server-side logic:**
+1. Validate caller is admin of an org
+2. Validate inputs (name, email required)
+3. Check email not already in org
+4. Create auth user or find existing
+5. INSERT organization_members row (role, status = 'invited')
+6. INSERT fleet_invitations row (token generated, status = 'pending')
+7. Send invite email (when SMTP is configured) with link to `/accept-invite?token=...`
+8. Return success with IDs
 
 ---
 
 ### `fleet-generate-report`
 
 **Purpose:** Generate PDF reports for fleet export  
-**Auth:** Requires valid JWT + caller must be org admin or viewer  
+**Auth:** Requires valid JWT + caller must be org admin or viewer. `verify_jwt: false` in config.  
 **Method:** POST
+**Status:** Deployed but returns 501 — report generation logic not yet implemented.
 
 ```typescript
 // Request
@@ -566,6 +649,38 @@ await supabase
    a. Compose email: "Du har X otaggade resor..."
    b. Send via Supabase SMTP (or Resend if scaled)
 3. Return count sent/failed
+
+### `fleet-delete-org`
+
+**Purpose:** Permanently delete an organization with full cleanup.  
+**Deployment:** `supabase functions deploy fleet-delete-org --no-verify-jwt --project-ref bfbdoamqywlkgynjgway`
+
+**Request:**
+```ts
+const { data, error } = await supabase.functions.invoke('fleet-delete-org', {
+  body: { delete_driver_accounts: boolean },
+});
+```
+
+**Validation (server-side):**
+- JWT present → `auth.getUser()` → user exists
+- Caller has active `organization_members` row with `role: 'admin'`
+
+**Server-side logic:**
+1. Fetch all org vehicles with `telemetry_enabled = true` (join `organization_vehicles` → `vehicles`)
+2. Best-effort offboard telemetry: push empty `fields: {}` config to Tesla via VPS proxy (`telemetry.millogapp.se:4443`) — parallel, 30s global timeout
+3. If `delete_driver_accounts === true`: call `auth.admin.deleteUser()` for each org member (excluding caller)
+4. `DELETE FROM organizations WHERE id = org_id` — CASCADE handles `organization_members`, `organization_vehicles` → `organization_vehicle_assignments`, `fleet_invitations`, `organization_tags`
+
+**Response (success):**
+```json
+{ "success": true, "offboarded_vehicles": 3, "deleted_accounts": 5 }
+```
+
+**Response (error):**
+- `401` — Missing or invalid JWT
+- `403` — Caller is not an admin of any organization
+- `500` — Database deletion failed
 
 ---
 

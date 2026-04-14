@@ -143,6 +143,17 @@ export function LoginPage() {
               {t("auth.forgotPassword")}
             </Link>
           </div>
+          <div className="text-sm text-center text-muted-foreground">
+            {t("auth.noAccount")}{" "}
+            <Link
+              to={mode === "org" ? "/signup" : "/signup/personal"}
+              className="font-medium text-primary hover:underline"
+            >
+              {mode === "org"
+                ? t("auth.createOrgAccount")
+                : t("auth.createPersonalAccount")}
+            </Link>
+          </div>
         </CardFooter>
       </form>
     </Card>
