@@ -44,9 +44,20 @@ function ReportCard({ title, description, icon, format, edgeFunction, orgId, fro
       return;
     }
 
-    // If Edge Function returns a download URL
+    // If Edge Function returns a download URL, validate origin before opening
     if (data?.url) {
-      window.open(data.url, "_blank");
+      try {
+        const parsed = new URL(data.url);
+        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL ?? "";
+        const allowedOrigins = [new URL(supabaseUrl).origin, window.location.origin];
+        if (allowedOrigins.includes(parsed.origin)) {
+          window.open(data.url, "_blank");
+        } else {
+          toast.error(t("reports.exportFailed"));
+        }
+      } catch {
+        toast.error(t("reports.exportFailed"));
+      }
     } else {
       toast.success(t("reports.exportStarted"));
     }

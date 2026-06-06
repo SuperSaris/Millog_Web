@@ -149,7 +149,7 @@ export function StatisticsDrivingPage() {
   }, [trips, t]);
 
   return (
-    <div className="space-y-5 p-4 sm:p-6 max-w-4xl mx-auto">
+    <div className="space-y-5 p-4 sm:p-6">
       {/* Header */}
       <div className="flex items-center gap-3">
         <Button variant="ghost" size="icon" onClick={() => navigate("/personal/statistics")}>
@@ -164,7 +164,7 @@ export function StatisticsDrivingPage() {
       {loading ? (
         <div className="space-y-4">
           <Skeleton className="h-20 rounded-xl" />
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-52 rounded-xl" />)}
           </div>
         </div>
@@ -208,7 +208,7 @@ export function StatisticsDrivingPage() {
             </CardContent>
           </Card>
 
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {/* Time-of-day */}
             <Card>
               <CardHeader className="pb-2">
@@ -286,7 +286,7 @@ export function StatisticsDrivingPage() {
             </Card>
 
             {/* Distance distribution — full width */}
-            <Card className="md:col-span-2">
+            <Card className="md:col-span-2 xl:col-span-3">
               <CardHeader className="pb-2">
                 <div className="flex items-center gap-2">
                   <IconRoute className="h-4 w-4 text-muted-foreground" />

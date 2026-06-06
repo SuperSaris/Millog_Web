@@ -34,7 +34,6 @@ import {
   IconBolt,
   IconBriefcase,
   IconArrowNarrowRight,
-  IconDownload,
   IconCash,
   IconTemperature,
   IconGauge,
@@ -47,7 +46,6 @@ import {
   IconChevronRight,
   IconCalendar,
   IconTrendingUp,
-  IconFileExport,
   IconLayersLinked,
   IconSearch,
   IconNote,
@@ -128,7 +126,7 @@ export type Period = "week" | "month" | "quarter" | "year";
 // StatPeriod is the richer superset used by StatisticsTab — re-exported for consumers
 export type { StatPeriod } from "@/lib/stats-calculations";
 
-type LatLng = { lat: number; lng: number };
+type LatLng = { lat: number; lng: number; speedKmh?: number; ts?: number; soc?: number };
 
 // ── Constants ────────────────────────────────────────────────
 export const MILERSATTNING_PER_KM = 2.5;
@@ -222,7 +220,14 @@ export function extractRoutePoints(trip: TripRow): LatLng[] {
       const p = c as Record<string, unknown>;
       const lat = typeof p["lat"] === "number" ? p["lat"] : typeof p["latitude"] === "number" ? p["latitude"] : null;
       const lng = typeof p["lng"] === "number" ? p["lng"] : typeof p["longitude"] === "number" ? p["longitude"] : null;
-      if (lat !== null && lng !== null) out.push({ lat, lng });
+      if (lat !== null && lng !== null) {
+        const pt: LatLng = { lat, lng };
+        if (typeof p["speed_kmh"] === "number") pt.speedKmh = p["speed_kmh"];
+        if (typeof p["timestamp"] === "number") pt.ts = p["timestamp"];
+        else if (typeof p["ts"] === "number")   pt.ts = p["ts"];
+        if (typeof p["soc"] === "number") pt.soc = p["soc"];
+        out.push(pt);
+      }
     }
     return out;
   }
@@ -278,7 +283,14 @@ export function extractLegs(trip: TripRow): {
       const p = c as Record<string, unknown>;
       const lat = typeof p["lat"] === "number" ? p["lat"] : typeof p["latitude"] === "number" ? p["latitude"] : null;
       const lng = typeof p["lng"] === "number" ? p["lng"] : typeof p["longitude"] === "number" ? p["longitude"] : null;
-      if (lat !== null && lng !== null) out.push({ lat, lng });
+      if (lat !== null && lng !== null) {
+        const pt: LatLng = { lat, lng };
+        if (typeof p["speed_kmh"] === "number") pt.speedKmh = p["speed_kmh"];
+        if (typeof p["timestamp"] === "number") pt.ts = p["timestamp"];
+        else if (typeof p["ts"] === "number")   pt.ts = p["ts"];
+        if (typeof p["soc"] === "number") pt.soc = p["soc"];
+        out.push(pt);
+      }
     }
     return out;
   }
@@ -719,6 +731,76 @@ export function TripRouteMap({ trip }: { trip: TripRow }) {
       {hasRoute && (
         <div className="absolute bottom-0 left-0 right-0 z-1000">
           <div className="bg-linear-to-t from-white/95 via-white/85 to-transparent pt-8 px-3 pb-3 space-y-2">
+            {/* ── Live stats bar — dark mobile-style, updates per breadcrumb ── */}
+            {(playing || playIdx > 0) && (() => {
+              const pt = allPoints[playIdx] ?? allPoints[0];
+              const total = Math.max(allPoints.length - 1, 1);
+              const frac  = playIdx / total;
+
+              // Time: use breadcrumb ts if available (already ms from Date.now()), else interpolate
+              const startMs = trip.started_at ? new Date(trip.started_at).getTime() : null;
+              const endMs   = trip.ended_at   ? new Date(trip.ended_at).getTime()   : null;
+              const ptMs    = pt?.ts ? pt.ts : (startMs && endMs ? startMs + frac * (endMs - startMs) : null);
+              const timeStr = ptMs
+                ? new Date(ptMs).toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+                : null;
+
+              // Drive time elapsed
+              const elapsedMs = startMs && ptMs ? ptMs - startMs : null;
+              const elapsedStr = elapsedMs != null && elapsedMs >= 0
+                ? (() => { const s = Math.round(elapsedMs / 1000); const m = Math.floor(s / 60); const sec = s % 60; return `${m}:${String(sec).padStart(2, "0")}`; })()
+                : null;
+
+              // Speed: from breadcrumb field, or compute from last 2 points
+              let speedKmh: number | null = pt?.speedKmh != null ? Math.round(pt.speedKmh) : null;
+              if (speedKmh == null && playIdx > 0) {
+                const prev = allPoints[playIdx - 1];
+                if (prev && pt) {
+                  const dLat = (pt.lat - prev.lat) * Math.PI / 180;
+                  const dLng = (pt.lng - prev.lng) * Math.PI / 180;
+                  const a = Math.sin(dLat/2)**2 + Math.cos(prev.lat*Math.PI/180)*Math.cos(pt.lat*Math.PI/180)*Math.sin(dLng/2)**2;
+                  const distM = 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+                  const dtSec = prev.ts && pt.ts ? pt.ts - prev.ts : null;
+                  if (dtSec && dtSec > 0) speedKmh = Math.round((distM / dtSec) * 3.6);
+                }
+              }
+
+              // Distance covered so far (sum of segments up to playIdx)
+              let distCovered = 0;
+              for (let i = 1; i <= playIdx && i < allPoints.length; i++) {
+                const a2 = allPoints[i-1]!, b2 = allPoints[i]!;
+                const dLat2 = (b2.lat - a2.lat) * Math.PI / 180;
+                const dLng2 = (b2.lng - a2.lng) * Math.PI / 180;
+                const aa = Math.sin(dLat2/2)**2 + Math.cos(a2.lat*Math.PI/180)*Math.cos(b2.lat*Math.PI/180)*Math.sin(dLng2/2)**2;
+                distCovered += 6371 * 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1-aa));
+              }
+
+              // SOC: from breadcrumb, else interpolate
+              const currentSoc = pt?.soc != null
+                ? Math.round(pt.soc)
+                : (trip.soc_start != null && trip.soc_end != null
+                    ? Math.round(trip.soc_start - frac * (trip.soc_start - trip.soc_end))
+                    : null);
+
+              const stats = [
+                { value: speedKmh != null ? `${speedKmh}` : "—", unit: "KM/H" },
+                { value: distCovered > 0 ? `${distCovered.toFixed(1)}` : "0.0", unit: "KM" },
+                ...(timeStr    ? [{ value: timeStr, unit: "KLOCKSLAG" }] : []),
+                ...(elapsedStr ? [{ value: elapsedStr, unit: "KÖRTID" }] : []),
+                ...(currentSoc != null ? [{ value: `${currentSoc}%`, unit: "BATTERI" }] : []),
+              ];
+
+              return (
+                <div className="flex items-center gap-2 flex-wrap">
+                  {stats.map(({ value, unit }) => (
+                    <div key={unit} className="flex flex-col items-center bg-white/90 backdrop-blur-sm rounded-xl px-3 py-1.5 shadow-sm border border-black/5 min-w-0">
+                      <span className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5 whitespace-nowrap">{unit}</span>
+                      <span className="text-sm font-bold text-foreground leading-tight tabular-nums whitespace-nowrap">{value}</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
             {/* Legend + speed on same row */}
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-3 pointer-events-none">
@@ -893,6 +975,29 @@ export function TripDetailSheet({ trip, open, onClose, tagLabels }: {
             {duration ? ` (${duration})` : ""}
           </p>
         </SheetHeader>
+
+        {/* ── Mobile-style stats bar ── */}
+        <div className="shrink-0 bg-zinc-900 px-4 py-3 flex items-center justify-around gap-2">
+          {[
+            { value: formatKm(trip.distance_km),       unit: "DISTANS" },
+            { value: formatTime(trip.started_at),       unit: "AVRESETID" },
+            { value: duration || "—",                   unit: "RESTID" },
+            ...(trip.energy_used_kwh != null
+              ? [{ value: `${trip.energy_used_kwh.toFixed(1)} kWh`, unit: "ENERGI" }]
+              : []),
+            ...(trip.soc_start != null && trip.soc_end != null
+              ? [{ value: `${Math.round(trip.soc_start)}→${Math.round(trip.soc_end)}%`, unit: "BATTERI" }]
+              : []),
+            ...(efficiency != null
+              ? [{ value: `${efficiency} Wh/km`, unit: "FÖRBRUKNING" }]
+              : []),
+          ].map(({ value, unit }) => (
+            <div key={unit} className="flex flex-col items-center min-w-0">
+              <span className="text-white text-base font-bold leading-tight tabular-nums tracking-tight whitespace-nowrap">{value}</span>
+              <span className="text-zinc-400 text-[9px] font-semibold tracking-widest mt-0.5 whitespace-nowrap">{unit}</span>
+            </div>
+          ))}
+        </div>
 
         {/* ── Body ── */}
         <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
@@ -1187,16 +1292,141 @@ export function PeriodCalendarPicker({
   );
 }
 
+// ── TagPicker — compact pill trigger → popover grid ─────────
+// Used on each trip row for quick inline tagging.
+export type TagDef = { name: string; label: string; color: string };
+
+function TagPicker({
+  value,
+  tagDefs,
+  onChange,
+}: {
+  value: string;
+  tagDefs: TagDef[];
+  onChange: (v: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const current = tagDefs.find(t => t.name === value) ?? tagDefs.find(t => t.name === "untagged")!;
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          className="flex items-center gap-1.5 h-6 px-2.5 rounded-full text-[11px] font-semibold border transition-colors hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+          style={{
+            backgroundColor: current.color + "22",
+            borderColor: current.color + "55",
+            color: current.color,
+          }}
+        >
+          <span
+            className="w-1.5 h-1.5 rounded-full shrink-0"
+            style={{ backgroundColor: current.color }}
+          />
+          {current.label}
+          <IconChevronDown className="h-3 w-3 shrink-0 opacity-60" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        side="bottom"
+        sideOffset={6}
+        className="p-1.5 w-48 rounded-xl shadow-xl"
+      >
+        <div className="flex flex-col gap-0.5">
+          {tagDefs.map(td => {
+            const active = td.name === value;
+            return (
+              <button
+                key={td.name}
+                className={cn(
+                  "flex items-center gap-2.5 w-full px-3 py-2 rounded-lg text-sm transition-colors text-left",
+                  active
+                    ? "font-semibold"
+                    : "text-foreground hover:bg-muted/60"
+                )}
+                style={active ? { backgroundColor: td.color + "18", color: td.color } : {}}
+                onClick={() => { onChange(td.name); setOpen(false); }}
+              >
+                <span
+                  className="w-2.5 h-2.5 rounded-full shrink-0 ring-1 ring-white/60"
+                  style={{ backgroundColor: td.color }}
+                />
+                <span className="flex-1 truncate">{td.label}</span>
+                {active && <IconCheck className="h-3.5 w-3.5 shrink-0" />}
+              </button>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+// ── TagPickerFull — full-width grid for merging ─────────────
+export function TagPickerFull({
+  value,
+  tagDefs,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  tagDefs: TagDef[];
+  onChange: (v: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "grid gap-1.5",
+        tagDefs.length <= 4 ? "grid-cols-4" : "grid-cols-5"
+      )}
+    >
+      {tagDefs.map(td => {
+        const active = td.name === value;
+        return (
+          <button
+            key={td.name}
+            disabled={disabled}
+            onClick={() => onChange(td.name)}
+            className={cn(
+              "flex flex-col items-center justify-center gap-1.5 px-1.5 py-3 rounded-xl border text-[11px] font-medium transition-all focus:outline-none focus-visible:ring-2 leading-tight",
+              active
+                ? "border-2 ring-0"
+                : "border-border hover:border-muted-foreground/40 hover:bg-muted/30",
+              disabled && "opacity-50 cursor-not-allowed"
+            )}
+            style={
+              active
+                ? {
+                    backgroundColor: td.color + "1a",
+                    borderColor: td.color,
+                    color: td.color,
+                  }
+                : { color: "var(--muted-foreground)" }
+            }
+          >
+            <span
+              className="w-4 h-4 rounded-full ring-2 ring-white/40 shrink-0"
+              style={{ backgroundColor: td.color }}
+            />
+            <span className="w-full text-center leading-tight wrap-break-word hyphens-auto">{td.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── TripsTab ─────────────────────────────────────────────────
-const SYSTEM_TAGS: TripTag[] = ["work", "commute", "personal", "untagged"];
-const SYSTEM_TAG_COLORS: Record<string, string> = {
+export const SYSTEM_TAGS: TripTag[] = ["work", "commute", "personal", "untagged"];
+export const SYSTEM_TAG_COLORS: Record<string, string> = {
   work: "#3b82f6", commute: "#f59e0b", personal: "#10b981", untagged: "#9ca3af",
 };
 
 export function TripsTab({
   trips: initialTrips, loading, loadingMore, hasMore, onLoadMore,
   periodTotals, period, onPeriodChange, onSelect,
-  customTags = [], customRange, onCustomRangeChange, onRefresh,
+  customTags = [], customRange, onCustomRangeChange, onRefresh: _onRefresh,
 }: {
   trips: TripRow[]; loading: boolean; period: Period;
   loadingMore?: boolean;
@@ -1211,6 +1441,7 @@ export function TripsTab({
 }) {
   const { t } = useTranslation();
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [tagFilter, setTagFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [tagOverrides, setTagOverrides] = useState<Record<string, string>>({});
@@ -1218,10 +1449,6 @@ export function TripsTab({
   // ── Selection + merge state ──────────────────────────────────
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [mergeSheetOpen, setMergeSheetOpen] = useState(false);
-  const [mergeTag, setMergeTag] = useState("untagged");
-  const [merging, setMerging] = useState(false);
-  const [mergeError, setMergeError] = useState<string | null>(null);
   const [bulkTagOpen, setBulkTagOpen] = useState(false);
   const [bulkTagging, setBulkTagging] = useState(false);
 
@@ -1288,8 +1515,6 @@ export function TripsTab({
   function exitSelectionMode() {
     setSelectionMode(false);
     setSelectedIds(new Set());
-    setMergeSheetOpen(false);
-    setMergeError(null);
     setBulkTagOpen(false);
   }
 
@@ -1322,24 +1547,11 @@ export function TripsTab({
     exitSelectionMode();
   }
 
-  // ── Merge ────────────────────────────────────────────────────
-  async function handleMergeConfirm() {
-    if (!user) return;
-    const { validateMergeSelection, mergeTrips } = await import("@/lib/merge-trips");
+  // ── Merge ── navigate to review page ─────────────────────────
+  function handleOpenMergePage() {
     const selectedTrips = trips.filter(tr => selectedIds.has(tr.id));
-    const err = validateMergeSelection(selectedTrips);
-    if (err) { setMergeError(err); return; }
-    setMerging(true);
-    setMergeError(null);
-    try {
-      await mergeTrips(selectedTrips, mergeTag, user.id);
-      exitSelectionMode();
-      onRefresh?.();
-    } catch (e) {
-      setMergeError((e as Error).message);
-    } finally {
-      setMerging(false);
-    }
+    navigate("/personal/trips/merge", { state: { trips: selectedTrips, customTags } });
+    exitSelectionMode();
   }
 
   const q = search.trim().toLowerCase();
@@ -1567,31 +1779,14 @@ export function TripsTab({
                         </div>
                       </button>
 
-                      {/* Inline quick-tag select — hidden in selection mode */}
+                      {/* Inline quick-tag picker — hidden in selection mode */}
                       {!selectionMode && (
                         <div className="shrink-0" onClick={e => e.stopPropagation()}>
-                          <Select value={eff} onValueChange={v => handleTagChange(trip.id, v, eff)}>
-                            <SelectTrigger
-                              className="h-auto py-0.5 px-2 text-[11px] font-medium border rounded-full shadow-none focus:ring-0 w-auto gap-1"
-                              style={{
-                                backgroundColor: tagColor + "20",
-                                borderColor: tagColor + "60",
-                                color: tagColor,
-                              }}
-                            >
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {allTagDefs.map(td => (
-                                <SelectItem key={td.name} value={td.name} className="text-sm">
-                                  <div className="flex items-center gap-2">
-                                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: td.color }} />
-                                    {td.label}
-                                  </div>
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                          <TagPicker
+                            value={eff}
+                            tagDefs={allTagDefs}
+                            onChange={v => handleTagChange(trip.id, v, eff)}
+                          />
                         </div>
                       )}
 
@@ -1667,7 +1862,7 @@ export function TripsTab({
                 size="sm"
                 variant="secondary"
                 className="h-7 text-xs gap-1.5 bg-blue-500 hover:bg-blue-600 text-white border-blue-500"
-                onClick={() => { setMergeTag("untagged"); setMergeError(null); setMergeSheetOpen(true); }}
+                onClick={handleOpenMergePage}
               >
                 <IconLayersLinked className="h-3.5 w-3.5" />
                 Slå ihop
@@ -1683,60 +1878,7 @@ export function TripsTab({
         </div>
       )}
 
-      {/* ── Merge confirm sheet ── */}
-      <Sheet open={mergeSheetOpen} onOpenChange={v => { if (!v && !merging) { setMergeSheetOpen(false); setMergeError(null); } }}>
-        <SheetContent side="bottom" className="rounded-t-2xl pb-safe">
-          <SheetHeader className="pb-4">
-            <SheetTitle className="flex items-center gap-2">
-              <IconLayersLinked className="h-4 w-4 text-blue-500" />
-              Slå ihop {selectedIds.size} resor
-            </SheetTitle>
-          </SheetHeader>
-          <div className="space-y-4">
-            <div>
-              <p className="text-xs text-muted-foreground mb-2">Etikett för den sammanslagna resan</p>
-              <Select value={mergeTag} onValueChange={setMergeTag} disabled={merging}>
-                <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {allTagDefs.map(td => (
-                    <SelectItem key={td.name} value={td.name}>
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: td.color }} />
-                        {td.label}
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              {trips
-                .filter(tr => selectedIds.has(tr.id))
-                .sort((a, b) => a.started_at.localeCompare(b.started_at))
-                .map(tr => (
-                  <div key={tr.id} className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 shrink-0" />
-                    <span>{formatTime(tr.started_at)} · {formatKm(tr.distance_km)}</span>
-                    <span className="truncate">{tr.start_address?.split(",")[0]} → {tr.end_address?.split(",")[0]}</span>
-                  </div>
-                ))}
-            </div>
-            {mergeError && (
-              <p className="text-sm text-red-500 flex items-center gap-1.5">
-                <IconAlertTriangle className="h-4 w-4 shrink-0" /> {mergeError}
-              </p>
-            )}
-            <div className="flex gap-2 pt-1">
-              <Button className="flex-1" onClick={handleMergeConfirm} disabled={merging}>
-                {merging ? "Slår ihop…" : "Bekräfta sammanslagning"}
-              </Button>
-              <Button variant="outline" onClick={() => { setMergeSheetOpen(false); setMergeError(null); }} disabled={merging}>
-                Avbryt
-              </Button>
-            </div>
-          </div>
-        </SheetContent>
-      </Sheet>
+      {/* Merge is handled by /personal/trips/merge route */}
     </div>
   );
 }
@@ -1930,7 +2072,7 @@ export function StatisticsTab({
     ? { label: "Blandkörare", color: "#FF9800" }
     : { label: "Stadskörare", color: "#42A5F5" };
 
-  const effColor = effStats
+  const effColor = effStats && effStats.vsSpec != null && effStats.wltpSpec != null
     ? effStats.vsSpec <= 0 ? "#10b981"
     : effStats.vsSpec <= effStats.wltpSpec * 0.2 ? "#f59e0b"
     : "#ef4444"
@@ -1962,7 +2104,7 @@ export function StatisticsTab({
           </div>
         </div>
         <div className="h-7 w-px bg-border hidden sm:block shrink-0" />
-        {/* Skatteavdrag */}
+        {/* Milersättning */}
         <div className="flex items-center gap-2.5">
           <span className="rounded-md p-1.5 shrink-0" style={{ background: "#8b5cf620" }}>
             <IconBriefcase className="h-4 w-4" style={{ color: "#8b5cf6" }} />
@@ -1999,7 +2141,7 @@ export function StatisticsTab({
             <p className="text-[11px] text-muted-foreground leading-tight">{t("personal.statCardAvgConsumption")}</p>
             <p className="text-sm font-bold tabular-nums leading-snug" style={effColor ? { color: effColor } : undefined}>
               {stats.avgEfficiency > 0 ? `${stats.avgEfficiency.toFixed(1)} kWh/100km` : "—"}
-              {effStats && <span className="text-[11px] font-normal text-muted-foreground ml-1" style={{ color: undefined }}>· WLTP {effStats.wltpSpec.toFixed(1)}</span>}
+              {effStats && effStats.wltpSpec != null && <span className="text-[11px] font-normal text-muted-foreground ml-1" style={{ color: undefined }}>· WLTP {effStats.wltpSpec.toFixed(1)}</span>}
             </p>
           </div>
         </div>
@@ -2082,7 +2224,7 @@ export function StatisticsTab({
       {/* ── Stat cards grid ── */}
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
 
-        {/* ── 1. Skatteavdrag ── */}
+        {/* ── 1. Milersättning ── */}
         <StatCard title={t("personal.statCardTaxDeduction")} icon={IconBriefcase} iconColor="#8b5cf6" note={note}>
           <div className="text-center py-1">
             <p className="text-3xl font-bold tabular-nums" style={{ color: "#8b5cf6" }}>
@@ -2116,12 +2258,14 @@ export function StatisticsTab({
                 <p className="text-3xl font-bold tabular-nums" style={{ color: effColor }}>
                   {effStats.avgKwhPer100.toFixed(1)} <span className="text-base font-normal">kWh/100km</span>
                 </p>
-                <p className="text-xs mt-0.5" style={{ color: effStats.vsSpec <= 0 ? "#10b981" : "#f59e0b" }}>
-                  {effStats.vsSpec <= 0 ? `${Math.abs(effStats.vsSpec).toFixed(1)} kWh under WLTP ↓` : `${effStats.vsSpec.toFixed(1)} kWh över WLTP ↑`}
+                <p className="text-xs mt-0.5" style={{ color: effStats.vsSpec != null && effStats.vsSpec <= 0 ? "#10b981" : "#f59e0b" }}>
+                  {effStats.vsSpec == null
+                    ? "WLTP-jämförelse saknas"
+                    : effStats.vsSpec <= 0 ? `${Math.abs(effStats.vsSpec).toFixed(1)} kWh under WLTP ↓` : `${effStats.vsSpec.toFixed(1)} kWh över WLTP ↑`}
                 </p>
               </div>
               <div className="space-y-2">
-                <StatRow label="WLTP spec" value={`${effStats.wltpSpec.toFixed(1)} kWh/100km`} />
+                <StatRow label="WLTP spec" value={effStats.wltpSpec != null ? `${effStats.wltpSpec.toFixed(1)} kWh/100km` : "—"} />
                 <StatRow label="Bästa resa" value={`${effStats.bestKwhPer100.toFixed(1)} kWh/100km`} valueColor="#10b981" />
                 <StatRow label="Sämsta resa" value={`${effStats.worstKwhPer100.toFixed(1)} kWh/100km`} valueColor="#ef4444" />
                 {effStats.avgSocDelta != null && <StatRow label="Snitt SoC-tapp" value={`${effStats.avgSocDelta.toFixed(1)}%`} />}
@@ -2312,60 +2456,4 @@ export function StatisticsTab({
   );
 }
 
-// ── ExportTab ────────────────────────────────────────────────
-export function ExportTab({ trips, period, onPeriodChange }: {
-  trips: TripRow[]; period: Period; onPeriodChange: (p: Period) => void;
-}) {
-  const { t } = useTranslation();
-  const [tagFilter, setTagFilter] = useState("all");
-  const filtered = tagFilter === "work" ? trips.filter(tr => tr.tag === "work" || tr.tag === "commute") : trips;
-  const totalKm = filtered.reduce((s, tr) => s + (tr.distance_km ?? 0), 0);
-
-  return (
-    <div className="max-w-lg space-y-6">
-      <div>
-        <h3 className="text-base font-semibold">{t("personal.exportTitle")}</h3>
-        <p className="text-sm text-muted-foreground mt-1">{t("personal.exportDescription")}</p>
-      </div>
-      <div className="space-y-4">
-        <div className="space-y-1.5">
-          <label className="text-sm font-medium">Period</label>
-          <PeriodSelect value={period} onChange={onPeriodChange} />
-        </div>
-        <div className="space-y-1.5">
-          <label className="text-sm font-medium">{t("personal.exportFilterLabel")}</label>
-          <Select value={tagFilter} onValueChange={setTagFilter}>
-            <SelectTrigger className="w-48 h-8 text-sm"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">{t("personal.exportTagAll")}</SelectItem>
-              <SelectItem value="work">{t("personal.exportTagWork")}</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        {filtered.length > 0 && (
-          <p className="text-sm text-muted-foreground">
-            {filtered.length} {t("personal.exportSummaryTrips")}, {Math.round(totalKm).toLocaleString("sv-SE")} {t("personal.exportSummaryKm")}
-          </p>
-        )}
-      </div>
-      <Separator />
-      <div className="space-y-3">
-        <p className="text-sm font-medium">Format</p>
-        <div className="flex gap-3">
-          {([
-            { key: "pdf",  label: "PDF",   icon: IconFileExport },
-            { key: "xlsx", label: "Excel", icon: IconDownload   },
-            { key: "csv",  label: "CSV",   icon: IconDownload   },
-          ] as const).map(({ key, label, icon: Icon }) => (
-            <Button key={key} variant="outline" className="flex-1 gap-2" disabled>
-              <Icon className="h-4 w-4" />{label}
-            </Button>
-          ))}
-        </div>
-      </div>
-      <div className="rounded-xl bg-muted/50 border p-4">
-        <p className="text-sm text-muted-foreground">{t("personal.exportComingSoon")}</p>
-      </div>
-    </div>
-  );
-}
+// ── (ExportTab removed — replaced by full ExportPage in export.tsx) ─────────

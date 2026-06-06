@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useAuth } from "@/contexts/auth-context";
 import { useOrg } from "@/contexts/org-context";
 import { AppSidebar } from "@/components/app-sidebar";
+import { SubscriptionBanner } from "@/components/subscription-banner";
 import {
   SidebarInset,
   SidebarProvider,
@@ -83,7 +84,7 @@ function DashboardSkeleton() {
 export function DashboardLayout() {
   const { t } = useTranslation();
   const { user, loading } = useAuth();
-  const { loading: orgLoading } = useOrg();
+  const { loading: orgLoading, isFleetUser } = useOrg();
   const location = useLocation();
 
   if (loading || orgLoading) {
@@ -92,6 +93,12 @@ export function DashboardLayout() {
 
   if (!user) {
     return <Navigate to="/login" replace />;
+  }
+
+  // Personal users who land on /dashboard (e.g. after browser reopen with stale URL)
+  // should be redirected to their personal dashboard, not shown the fleet onboarding.
+  if (!isFleetUser && localStorage.getItem("millog-login-mode") === "personal") {
+    return <Navigate to="/personal" replace />;
   }
 
   const pathSegments = location.pathname.split("/").filter(Boolean);
@@ -133,6 +140,7 @@ export function DashboardLayout() {
             </Breadcrumb>
           </div>
         </header>
+        <SubscriptionBanner />
         <main className="flex flex-1 flex-col gap-4 p-4 pt-0">
           <Outlet />
         </main>

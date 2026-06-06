@@ -15,7 +15,7 @@ i18n
       sv: { translation: sv },
       en: { translation: en },
     },
-    fallbackLng: "sv",
+    fallbackLng: "en",
     supportedLngs: supportedLanguages,
     interpolation: {
       escapeValue: false, // React already escapes

@@ -163,14 +163,14 @@ export function StatisticsEfficiencyPage() {
 
   const tripsWithTemp = trips.filter(tr => tr.outside_temp_c != null).length;
 
-  const effColor = effStats
+  const effColor = effStats && effStats.vsSpec != null && effStats.wltpSpec != null
     ? effStats.vsSpec <= 0 ? "#10b981"
     : effStats.vsSpec <= effStats.wltpSpec * 0.2 ? "#f59e0b"
     : "#ef4444"
     : undefined;
 
   return (
-    <div className="space-y-5 p-4 sm:p-6 max-w-4xl mx-auto">
+    <div className="space-y-5 p-4 sm:p-6">
       {/* Header */}
       <div className="flex items-center gap-3">
         <Button variant="ghost" size="icon" onClick={() => navigate("/personal/statistics")}>
@@ -185,7 +185,7 @@ export function StatisticsEfficiencyPage() {
       {loading ? (
         <div className="space-y-4">
           <Skeleton className="h-24 rounded-xl" />
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-52 rounded-xl" />)}
           </div>
         </div>
@@ -213,16 +213,20 @@ export function StatisticsEfficiencyPage() {
                 {/* WLTP */}
                 <div className="text-center">
                   <p className="text-2xl font-bold tabular-nums text-muted-foreground">
-                    {effStats.wltpSpec.toFixed(1)}
+                    {effStats.wltpSpec != null ? effStats.wltpSpec.toFixed(1) : "—"}
                   </p>
                   <p className="text-xs text-muted-foreground">{t("personal.efficiencyWltp")}</p>
                 </div>
                 <div className="h-12 w-px bg-border hidden sm:block" />
                 {/* vs WLTP */}
                 <div className="text-center">
-                  <p className="text-2xl font-bold tabular-nums" style={{ color: effStats.vsSpec <= 0 ? "#10b981" : "#f59e0b" }}>
-                    {effStats.vsSpec <= 0 ? "−" : "+"}{Math.abs(effStats.vsSpec).toFixed(1)}
-                  </p>
+                  {effStats.vsSpec != null ? (
+                    <p className="text-2xl font-bold tabular-nums" style={{ color: effStats.vsSpec <= 0 ? "#10b981" : "#f59e0b" }}>
+                      {effStats.vsSpec <= 0 ? "−" : "+"}{Math.abs(effStats.vsSpec).toFixed(1)}
+                    </p>
+                  ) : (
+                    <p className="text-2xl font-bold tabular-nums text-muted-foreground">—</p>
+                  )}
                   <p className="text-xs text-muted-foreground">{t("personal.efficiencyVsWltp")}</p>
                 </div>
                 <div className="h-12 w-px bg-border hidden sm:block" />
@@ -362,9 +366,9 @@ export function StatisticsEfficiencyPage() {
               </Card>
             )}
 
-            {/* Efficiency per temperature band — full width */}
+            {/* Efficiency per temperature band — spans 2 on md, full row on xl */}
             {tripsWithTemp > 0 && (
-              <Card className="md:col-span-2">
+              <Card className="md:col-span-2 xl:col-span-2">
                 <CardHeader className="pb-2">
                   <div className="flex items-center gap-2">
                     <IconFlame className="h-4 w-4 text-muted-foreground" />
@@ -416,7 +420,7 @@ export function StatisticsEfficiencyPage() {
             )}
 
             {/* Summary table */}
-            <Card className={tripsWithTemp > 0 ? "" : "md:col-span-2"}>
+            <Card className={tripsWithTemp > 0 ? "xl:col-span-1" : "md:col-span-2"}>
               <CardHeader className="pb-2">
                 <div className="flex items-center gap-2">
                   <IconBolt className="h-4 w-4 text-muted-foreground" />
@@ -428,7 +432,7 @@ export function StatisticsEfficiencyPage() {
                   { label: t("personal.efficiencyTripsWithData"), value: `${effStats.tripCount}` },
                   { label: t("personal.efficiencyTotalEnergy"), value: stats.totalKwh > 0 ? `${stats.totalKwh.toFixed(1)} kWh` : "—" },
                   { label: t("personal.efficiencyTotalKm"), value: `${Math.round(stats.totalKm).toLocaleString("sv-SE")} km` },
-                  { label: t("personal.efficiencyWltpSpec"), value: `${effStats.wltpSpec.toFixed(1)} kWh/100km` },
+                  { label: t("personal.efficiencyWltpSpec"), value: effStats.wltpSpec != null ? `${effStats.wltpSpec.toFixed(1)} kWh/100km` : "—" },
                   { label: t("personal.efficiencyAvgSocDelta"), value: effStats.avgSocDelta != null ? `${effStats.avgSocDelta.toFixed(1)}%` : "—" },
                   { label: t("personal.efficiencyCostPerKm"), value: effStats.avgCostPerKm != null ? `${effStats.avgCostPerKm.toFixed(2)} kr` : "—" },
                 ].map(({ label, value }) => (

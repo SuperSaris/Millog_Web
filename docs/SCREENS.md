@@ -385,7 +385,7 @@ UI complete. Edge Function `fleet-generate-report` is deployed but returns 501 �
 ### Statistics Tab
 
 - 8 customizable stat cards:
-  - Energieffektivitet, Körmönster, Skatteavdrag, Bränslebesparingar
+  - Energieffektivitet, Körmönster, Milersättning, Bränslebesparingar
   - Miljöpåverkan, Laddningsbeteende, Resfördelning, Snittförbrukning
 - Click Energieffektivitet → `/statistics-efficiency` (full detail page with charts)
 - Click Körmönster → `/statistics-driving` (full detail page with charts)

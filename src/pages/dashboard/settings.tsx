@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { useOrg } from "@/contexts/org-context";
 import { useAuth } from "@/contexts/auth-context";
+import { useSubscription } from "@/hooks/use-subscription";
 import { supabase } from "@/lib/supabase";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -20,7 +21,6 @@ import {
 } from "@/components/ui/select";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import {
-  IconBuildingSkyscraper,
   IconShieldCheck,
   IconAlertTriangle,
   IconTrash,
@@ -513,20 +513,187 @@ function ZonesCard() {
 
 function BillingCard() {
   const { t } = useTranslation();
+  const { session } = useAuth();
+  const { organization } = useOrg();
+  const sub = useSubscription();
+  const [loadingPortal, setLoadingPortal] = useState(false);
+  const [loadingCheckout, setLoadingCheckout] = useState(false);
+
+  async function openPortal() {
+    if (!session) return;
+    setLoadingPortal(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("stripe-customer-portal", {
+        body: { user_type: "fleet" },
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (error || !data?.url) throw new Error(error?.message ?? t("billing.portalError"));
+      window.location.href = data.url;
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t("billing.portalError"));
+      setLoadingPortal(false);
+    }
+  }
+
+  async function startCheckout() {
+    if (!session) return;
+    setLoadingCheckout(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("stripe-create-checkout", {
+        body: { plan: "fleet_monthly", user_type: "fleet" },
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (error || !data?.url) throw new Error(error?.message ?? t("billing.checkoutError"));
+      window.location.href = data.url;
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t("billing.checkoutError"));
+      setLoadingCheckout(false);
+    }
+  }
+
+  const statusBadgeVariant = (): "default" | "secondary" | "destructive" | "outline" => {
+    switch (sub.status) {
+      case "active":   return "default";
+      case "trialing": return "secondary";
+      case "past_due":
+      case "unpaid":   return "destructive";
+      case "canceled":
+      case "inactive": return "outline";
+      default:         return "outline";
+    }
+  };
+
+  const statusLabel = () => t(`billing.status_${sub.status}` as "billing.status_active");
+
+  const formatDate = (iso: string | null) =>
+    iso
+      ? new Intl.DateTimeFormat("sv-SE", { dateStyle: "long" }).format(new Date(iso))
+      : "—";
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t("settings.billing")}</CardTitle>
-        <CardDescription>{t("settings.billingDescription")}</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="flex items-center gap-2">
-          <IconBuildingSkyscraper className="h-5 w-5 text-muted-foreground" />
-          <p className="text-sm text-muted-foreground">{t("common.comingSoon")}</p>
+    <div className="space-y-4">
+      {/* ── Past due warning ──────────────────────────── */}
+      {sub.isPastDue && (
+        <div className="flex items-start gap-3 rounded-lg border border-destructive/50 bg-destructive/10 p-4">
+          <IconAlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
+          <div className="flex-1 space-y-1">
+            <p className="text-sm font-medium text-destructive">{t("billing.pastDueTitle")}</p>
+            <p className="text-sm text-destructive/80">{t("billing.pastDueDescription")}</p>
+            <Button size="sm" variant="destructive" onClick={openPortal} disabled={loadingPortal} className="mt-2">
+              {loadingPortal ? t("common.loading") : t("billing.updatePaymentMethod")}
+            </Button>
+          </div>
         </div>
-      </CardContent>
-    </Card>
+      )}
+
+      {/* ── Trial ending soon ─────────────────────────── */}
+      {sub.trialEndingSoon && (
+        <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4">
+          <IconAlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
+          <div className="flex-1">
+            <p className="text-sm font-medium text-amber-700 dark:text-amber-300">
+              {t("billing.trialEndingSoon", { days: sub.daysUntilExpiry })}
+            </p>
+            <p className="text-sm text-amber-600/80 dark:text-amber-400/80">
+              {t("billing.trialEndingSoonDesc")}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ── Subscription status card ──────────────────── */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle>{t("settings.billing")}</CardTitle>
+            <Badge variant={statusBadgeVariant()}>{statusLabel()}</Badge>
+          </div>
+          <CardDescription>{t("settings.billingDescription")}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {sub.loading ? (
+            <div className="space-y-2">
+              <div className="h-4 w-48 animate-pulse rounded bg-muted" />
+              <div className="h-4 w-32 animate-pulse rounded bg-muted" />
+            </div>
+          ) : (
+            <>
+              {/* Plan info */}
+              <div className="grid gap-3 text-sm sm:grid-cols-2">
+                <div>
+                  <p className="text-muted-foreground">{t("billing.plan")}</p>
+                  <p className="font-medium">
+                    {sub.plan ? t(`billing.planName_${sub.plan}` as "billing.planName_fleet_monthly") : "—"}
+                  </p>
+                </div>
+                {sub.quantity > 0 && (
+                  <div>
+                    <p className="text-muted-foreground">{t("billing.vehicles")}</p>
+                    <p className="font-medium">
+                      {t("billing.vehicleCount", { count: sub.quantity })}
+                    </p>
+                  </div>
+                )}
+                {sub.isTrialing && sub.trialEndsAt && (
+                  <div>
+                    <p className="text-muted-foreground">{t("billing.trialEnds")}</p>
+                    <p className="font-medium">{formatDate(sub.trialEndsAt)}</p>
+                  </div>
+                )}
+                {!sub.isTrialing && sub.currentPeriodEnd && sub.isActive && (
+                  <div>
+                    <p className="text-muted-foreground">{t("billing.nextBilling")}</p>
+                    <p className="font-medium">{formatDate(sub.currentPeriodEnd)}</p>
+                  </div>
+                )}
+                {sub.isCanceled && sub.currentPeriodEnd && (
+                  <div>
+                    <p className="text-muted-foreground">{t("billing.accessUntil")}</p>
+                    <p className="font-medium">{formatDate(sub.currentPeriodEnd)}</p>
+                  </div>
+                )}
+                {organization?.billing_email && (
+                  <div>
+                    <p className="text-muted-foreground">{t("billing.billingEmail")}</p>
+                    <p className="font-medium truncate">{organization.billing_email}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Price per vehicle callout */}
+              {sub.isActive && sub.plan === "fleet_monthly" && (
+                <div className="rounded-md border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+                  {t("billing.fleetPriceExplain", { rate: 129 })}
+                </div>
+              )}
+
+              {/* Action buttons */}
+              <div className="flex flex-wrap gap-2 pt-2">
+                {(sub.isActive || sub.isPastDue) && (
+                  <Button variant="outline" onClick={openPortal} disabled={loadingPortal}>
+                    {loadingPortal
+                      ? t("common.loading")
+                      : t("billing.manageSubscription")}
+                  </Button>
+                )}
+                {(sub.isCanceled || sub.status === "inactive") && (
+                  <Button onClick={startCheckout} disabled={loadingCheckout}>
+                    {loadingCheckout ? t("common.loading") : t("billing.subscribe")}
+                  </Button>
+                )}
+              </div>
+
+              {/* Portal capability list */}
+              {(sub.isActive || sub.isPastDue) && (
+                <p className="text-xs text-muted-foreground">
+                  {t("billing.portalHelp")}
+                </p>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 

@@ -3,6 +3,7 @@ import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "@/contexts/auth-context";
 import { PersonalSidebar } from "@/components/personal-sidebar";
+import { SubscriptionBanner } from "@/components/subscription-banner";
 import {
   SidebarInset,
   SidebarProvider,
@@ -114,6 +115,7 @@ export function PersonalLayout() {
             </Breadcrumb>
           </div>
         </header>
+        <SubscriptionBanner />
         <main className="flex flex-1 flex-col gap-4 p-4 pt-0">
           <Outlet />
         </main>

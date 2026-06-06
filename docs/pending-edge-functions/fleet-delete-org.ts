@@ -129,26 +129,31 @@ Deno.serve(async (req: Request) => {
   );
 
   // ── 2. Verify caller is admin of the organization ─────────────────
+  // Parse request body first to get org_id (user may be admin of multiple orgs)
+  let deleteDriverAccounts = false;
+  let orgId: string;
+  try {
+    const body = await req.json();
+    deleteDriverAccounts = body.delete_driver_accounts === true;
+    orgId = body.organization_id;
+  } catch {
+    return json({ error: "Invalid request body" }, 400);
+  }
+
+  if (!orgId || typeof orgId !== "string") {
+    return json({ error: "organization_id required" }, 400);
+  }
+
   const { data: membership, error: memberErr } = await adminClient
     .from("organization_members")
     .select("organization_id, role")
     .eq("user_id", user.id)
+    .eq("organization_id", orgId)
     .eq("status", "active")
     .single();
 
   if (memberErr || !membership || membership.role !== "admin") {
     return json({ error: "Forbidden — admin role required" }, 403);
-  }
-
-  const orgId = membership.organization_id;
-
-  // Parse request body
-  let deleteDriverAccounts = false;
-  try {
-    const body = await req.json();
-    deleteDriverAccounts = body.delete_driver_accounts === true;
-  } catch {
-    // Body is optional — default to not deleting accounts
   }
 
   // ── 3. Fetch all org members (needed for account deletion + logging) ──
@@ -182,14 +187,16 @@ Deno.serve(async (req: Request) => {
       .eq("telemetry_enabled", true);
 
     if (vehicles && vehicles.length > 0) {
-      // Best-effort offboard all telemetry vehicles in parallel
+      // Best-effort offboard all telemetry vehicles sequentially
+      // (sequential to respect Tesla API rate limits)
+      const offboardFailures: string[] = [];
       try {
         const results = await Promise.race([
-          offboardVehicles(adminClient, vehicles),
+          offboardVehicles(adminClient, vehicles, offboardFailures),
           new Promise<number>((_, reject) =>
             setTimeout(
-              () => reject(new Error("Global offboard timeout (30s)")),
-              30_000,
+              () => reject(new Error("Global offboard timeout (60s)")),
+              60_000,
             ),
           ),
         ]);
@@ -235,10 +242,7 @@ Deno.serve(async (req: Request) => {
     console.error(
       `[FLEET-DELETE-ORG] Failed to delete org ${orgId}: ${deleteError.message}`,
     );
-    return json(
-      { error: "Radering misslyckades", detail: deleteError.message },
-      500,
-    );
+    return json({ error: "Radering misslyckades" }, 500);
   }
 
   console.log(
@@ -268,6 +272,7 @@ async function offboardVehicles(
     user_id: string;
     telemetry_enabled: boolean;
   }>,
+  failures: string[],
 ): Promise<number> {
   // Group VINs by owner (user_id)
   const ownerVins = new Map<string, string[]>();
@@ -291,87 +296,87 @@ async function offboardVehicles(
 
   let total = 0;
 
-  // Process each owner in parallel
-  const tasks = Array.from(ownerVins.entries()).map(
-    async ([userId, vins]): Promise<number> => {
-      // Fetch the owner's refresh token
-      const { data: tokenRow, error: tErr } = await adminClient
-        .from("tesla_tokens")
-        .select("refresh_token")
-        .eq("user_id", userId)
-        .single();
+  // Process each owner sequentially (respects Tesla API rate limits)
+  for (const [userId, vins] of ownerVins.entries()) {
+    // Fetch the owner's refresh token
+    const { data: tokenRow, error: tErr } = await adminClient
+      .from("tesla_tokens")
+      .select("refresh_token")
+      .eq("user_id", userId)
+      .single();
 
-      if (tErr || !tokenRow?.refresh_token) {
-        console.log(
-          `[FLEET-DELETE-ORG] No Tesla token for user (skipping ${vins.length} vehicles)`,
-        );
-        return 0;
-      }
+    if (tErr || !tokenRow?.refresh_token) {
+      console.log(
+        `[FLEET-DELETE-ORG] No Tesla token for user (skipping ${vins.length} vehicles)`,
+      );
+      for (const vin of vins) failures.push(maskVin(vin));
+      continue;
+    }
 
-      // Refresh Tesla access token
-      const tokenRes = await fetch("https://auth.tesla.com/oauth2/v3/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          grant_type: "refresh_token",
-          client_id: clientId,
-          client_secret: clientSecret,
-          refresh_token: tokenRow.refresh_token,
-        }),
-      });
+    // Refresh Tesla access token
+    const tokenRes = await fetch("https://auth.tesla.com/oauth2/v3/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: tokenRow.refresh_token,
+      }),
+    });
 
-      if (!tokenRes.ok) {
-        console.error(
-          `[FLEET-DELETE-ORG] Tesla token refresh failed (${tokenRes.status})`,
-        );
-        return 0;
-      }
+    if (!tokenRes.ok) {
+      console.error(
+        `[FLEET-DELETE-ORG] Tesla token refresh failed (${tokenRes.status})`,
+      );
+      for (const vin of vins) failures.push(maskVin(vin));
+      continue;
+    }
 
-      const { access_token } = await tokenRes.json();
-      if (!access_token) return 0;
+    const { access_token } = await tokenRes.json();
+    if (!access_token) {
+      for (const vin of vins) failures.push(maskVin(vin));
+      continue;
+    }
 
-      // Push empty config to each VIN
-      const proxyUrl = `https://${TESLA_PROXY_HOST}:${TESLA_PROXY_PORT}/api/1/vehicles/fleet_telemetry_config`;
-      let count = 0;
+    // Push empty config to each VIN — sequentially
+    const proxyUrl = `https://${TESLA_PROXY_HOST}:${TESLA_PROXY_PORT}/api/1/vehicles/fleet_telemetry_config`;
 
-      for (const vin of vins) {
-        try {
-          const res = await fetch(proxyUrl, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${access_token}`,
-              "Content-Type": "application/json",
+    for (const vin of vins) {
+      try {
+        const res = await fetch(proxyUrl, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${access_token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            vins: [vin],
+            config: {
+              hostname: TELEMETRY_SERVER_HOST,
+              port: 8443,
+              ca: TELEMETRY_TLS_CERT,
+              fields: {}, // empty = car stops streaming all signals
             },
-            body: JSON.stringify({
-              vins: [vin],
-              config: {
-                hostname: TELEMETRY_SERVER_HOST,
-                port: 8443,
-                ca: TELEMETRY_TLS_CERT,
-                fields: {}, // empty = car stops streaming all signals
-              },
-            }),
-          });
+          }),
+        });
 
-          const body = await res.text();
-          console.log(
-            `[FLEET-DELETE-ORG] Offboard ${maskVin(vin)}: ${res.status} ${body}`,
-          );
-          if (res.ok) count++;
-        } catch (err) {
-          console.error(
-            `[FLEET-DELETE-ORG] Offboard ${maskVin(vin)} failed: ${(err as Error).message}`,
-          );
+        const body = await res.text();
+        console.log(
+          `[FLEET-DELETE-ORG] Offboard ${maskVin(vin)}: ${res.status} ${body}`,
+        );
+        if (res.ok) {
+          total++;
+        } else {
+          failures.push(maskVin(vin));
         }
+      } catch (err) {
+        console.error(
+          `[FLEET-DELETE-ORG] Offboard ${maskVin(vin)} failed: ${(err as Error).message}`,
+        );
+        failures.push(maskVin(vin));
       }
-
-      return count;
-    },
-  );
-
-  const results = await Promise.allSettled(tasks);
-  for (const r of results) {
-    if (r.status === "fulfilled") total += r.value;
+    }
   }
 
   return total;

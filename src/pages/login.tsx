@@ -38,9 +38,9 @@ export function LoginPage() {
       setError(err);
     }
     // After successful login, auth-context triggers redirect.
-    // The mode is stored in sessionStorage so the layout knows which view to show.
+    // Stored in localStorage (not sessionStorage) so it survives browser close/reopen.
     if (!err) {
-      sessionStorage.setItem("millog-login-mode", mode);
+      localStorage.setItem("millog-login-mode", mode);
     }
     setLoading(false);
   }
@@ -137,7 +137,7 @@ export function LoginPage() {
               ← {t("auth.chooseLoginType")}
             </button>
             <Link
-              to="/reset-password"
+              to="/forgot-password"
               className="text-sm text-muted-foreground hover:underline"
             >
               {t("auth.forgotPassword")}

@@ -40,6 +40,49 @@ serve(async (req) => {
     );
   }
 
+  // Validate format enum
+  const validFormats = ["csv", "pdf", "skatteverket"];
+  if (!validFormats.includes(format)) {
+    return new Response(
+      JSON.stringify({ error: `format must be one of: ${validFormats.join(", ")}` }),
+      { status: 400 },
+    );
+  }
+
+  // Validate date formats (YYYY-MM-DD)
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(from) || !dateRegex.test(to)) {
+    return new Response(
+      JSON.stringify({ error: "from and to must be YYYY-MM-DD format" }),
+      { status: 400 },
+    );
+  }
+
+  const fromDate = new Date(from);
+  const toDate = new Date(to);
+  if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
+    return new Response(
+      JSON.stringify({ error: "Invalid date values" }),
+      { status: 400 },
+    );
+  }
+
+  if (fromDate > toDate) {
+    return new Response(
+      JSON.stringify({ error: "'from' must be before or equal to 'to'" }),
+      { status: 400 },
+    );
+  }
+
+  // Cap report period at 1 year to prevent excessive queries
+  const oneYear = 366 * 24 * 60 * 60 * 1000;
+  if (toDate.getTime() - fromDate.getTime() > oneYear) {
+    return new Response(
+      JSON.stringify({ error: "Report period cannot exceed 1 year" }),
+      { status: 400 },
+    );
+  }
+
   // Verify caller is admin or viewer of this org
   const { data: callerMember } = await supabase
     .from("organization_members")

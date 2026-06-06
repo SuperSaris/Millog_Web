@@ -51,6 +51,7 @@ L.Icon.Default.mergeOptions({
 
 // ── Types ─────────────────────────────────────────────────────
 type TripTag = "work" | "commute" | "personal" | "untagged";
+type CustomTag = { id: string; name: string; color: string; is_work_tag: boolean };
 
 type TripRow = {
   id: string;
@@ -415,7 +416,8 @@ function MyCarCard({ vehicle, telemetry, lastTripEnd, loading }: {
   const socSignal      = telemetry.find(s => s.signal === "Soc" || s.signal === "BatteryLevel");
   const locationSignal = telemetry.find(s => s.signal === "Location" || s.signal === "VehicleLocation");
   const chargeSignal   = telemetry.find(s => s.signal === "ChargeState");
-  const soc         = socSignal      ? signalNum(socSignal.value)           : null;
+  const rawSoc      = socSignal      ? signalNum(socSignal.value)           : null;
+  const soc         = rawSoc != null ? Math.round(rawSoc)                   : null;
   const location    = locationSignal ? signalLocation(locationSignal.value) : null;
   const mapLocation = location ?? lastTripEnd;
   const chargeState = chargeSignal   ? signalStr(chargeSignal.value)        : null;
@@ -554,16 +556,23 @@ function BatteryHealthCard({ vehicle, snapshots, loading }: {
   );
 }
 
+// ── Resolve tag display (system or custom) ─────────────────────
+function resolveTagDisplay(tag: string, customTags: CustomTag[], t: (k: string) => string) {
+  if (tag === "work")     return { label: t("personal.tagWork"),     pill: TAG_STYLES.work.pill,     dot: TAG_STYLES.work.dot,     color: "" };
+  if (tag === "commute")  return { label: t("personal.tagCommute"),  pill: TAG_STYLES.commute.pill,  dot: TAG_STYLES.commute.dot,  color: "" };
+  if (tag === "personal") return { label: t("personal.tagPersonal"), pill: TAG_STYLES.personal.pill, dot: TAG_STYLES.personal.dot, color: "" };
+  if (tag === "untagged") return { label: t("personal.tagUntagged"), pill: TAG_STYLES.untagged.pill, dot: TAG_STYLES.untagged.dot, color: "" };
+  const ct = customTags.find(c => c.name === tag);
+  if (ct) return { label: ct.name, pill: "", dot: "", color: ct.color };
+  return { label: t("personal.tagUntagged"), pill: TAG_STYLES.untagged.pill, dot: TAG_STYLES.untagged.dot, color: "" };
+}
+
 // ── Recent trips preview ──────────────────────────────────────
-function RecentTripsCard({ trips, loading, onSelect }: {
-  trips: TripRow[]; loading: boolean; onSelect: (t: TripRow) => void;
+function RecentTripsCard({ trips, customTags, loading, onSelect }: {
+  trips: TripRow[]; customTags: CustomTag[]; loading: boolean; onSelect: (t: TripRow) => void;
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const tagLabels: Record<TripTag, string> = {
-    work: t("personal.tagWork"), commute: t("personal.tagCommute"),
-    personal: t("personal.tagPersonal"), untagged: t("personal.tagUntagged"),
-  };
   return (
     <Card>
       <CardHeader>
@@ -589,15 +598,18 @@ function RecentTripsCard({ trips, loading, onSelect }: {
         ) : (
           <div className="rounded-xl border overflow-hidden">
             {trips.map((trip, idx) => {
-              const tag = (trip.tag ?? "untagged") as TripTag;
-              const ts  = TAG_STYLES[tag] ?? TAG_STYLES.untagged;
+              const tagName = trip.tag ?? "untagged";
+              const td = resolveTagDisplay(tagName, customTags, t);
               const dur = tripDuration(trip.started_at, trip.ended_at);
               const dateStr = new Date(trip.started_at).toLocaleDateString("sv-SE", { day: "numeric", month: "short" });
               return (
                 <button key={trip.id} onClick={() => onSelect(trip)}
                   className={`w-full flex items-center gap-3 px-4 py-3 border-b last:border-b-0 hover:bg-muted/50 transition-colors text-left group ${idx % 2 === 0 ? "bg-card" : "bg-muted/20"}`}
                 >
-                  <span className={`w-2 h-2 rounded-full shrink-0 ${ts.dot}`} />
+                  {td.color
+                    ? <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: td.color }} />
+                    : <span className={`w-2 h-2 rounded-full shrink-0 ${td.dot}`} />
+                  }
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1 text-sm font-medium leading-tight">
                       <span className="truncate max-w-28">{trip.start_address?.split(",")[0] ?? "—"}</span>
@@ -607,7 +619,10 @@ function RecentTripsCard({ trips, loading, onSelect }: {
                     <div className="flex items-center gap-1.5 mt-0.5">
                       <span className="text-xs text-muted-foreground">{dateStr} · {formatTime(trip.started_at)}</span>
                       {dur && <span className="text-xs text-muted-foreground">· {dur}</span>}
-                      <Badge variant="outline" className={`text-xs border h-4 px-1.5 ${ts.pill}`}>{tagLabels[tag]}</Badge>
+                      {td.color
+                        ? <span className="text-[10px] font-semibold px-1.5 py-0 rounded-full border h-4 leading-none flex items-center" style={{ background: td.color + "22", borderColor: td.color + "55", color: td.color }}>{td.label}</span>
+                        : <Badge variant="outline" className={`text-xs border h-4 px-1.5 ${td.pill}`}>{td.label}</Badge>
+                      }
                     </div>
                   </div>
                   <div className="text-right shrink-0">
@@ -642,6 +657,7 @@ export function PersonalDashboardPage() {
 
   const [trips, setTrips]             = useState<TripRow[]>([]);
   const [recentTrips, setRecentTrips] = useState<TripRow[]>([]);
+  const [customTags, setCustomTags]   = useState<CustomTag[]>([]);
   const [vehicle, setVehicle]         = useState<VehicleRow | null>(null);
   const [telemetry, setTelemetry]     = useState<TelemetryRow[]>([]);
   const [snapshots, setSnapshots]     = useState<SnapshotRow[]>([]);
@@ -673,9 +689,15 @@ export function PersonalDashboardPage() {
         .eq("user_id", user.id)
         .limit(1)
         .maybeSingle(),
-    ]).then(([tripsRes, recentRes, vehicleRes]) => {
+      supabase
+        .from("trip_custom_tags")
+        .select("id, name, color, is_work_tag")
+        .eq("user_id", user.id)
+        .order("name"),
+    ]).then(([tripsRes, recentRes, vehicleRes, customTagsRes]) => {
       if (!tripsRes.error  && tripsRes.data)  setTrips(tripsRes.data as TripRow[]);
       if (!recentRes.error && recentRes.data) setRecentTrips(recentRes.data as TripRow[]);
+      if (!customTagsRes.error && customTagsRes.data) setCustomTags(customTagsRes.data as CustomTag[]);
       const v = vehicleRes.data as VehicleRow | null;
       if (v) {
         setVehicle(v);
@@ -797,7 +819,7 @@ export function PersonalDashboardPage() {
 
       <div className="grid gap-4 lg:grid-cols-5">
         <div className="lg:col-span-3">
-          <RecentTripsCard trips={recentTrips} loading={loading} onSelect={handleSelect} />
+          <RecentTripsCard trips={recentTrips} customTags={customTags} loading={loading} onSelect={handleSelect} />
         </div>
         <div className="lg:col-span-2 flex flex-col gap-4">
           <MyCarCard vehicle={vehicle} telemetry={telemetry} lastTripEnd={lastTripEnd} loading={loading} />

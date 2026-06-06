@@ -1,0 +1,29 @@
+# ============================================================
+# Millog Web — Apache production config (Loopia shared hosting)
+# Deployed as a Vite/React SPA (BrowserRouter, no basename)
+#
+# Stripped to minimum that works on Loopia FreeBSD/mpm-itk.
+# Loopia AllowOverride does not permit Options or Header directives
+# in .htaccess — use only RewriteEngine-based directives here.
+#
+# HTTPS redirect: handled by "Tvinga SSL" in Loopia Kundzonen (nginx edge).
+# Security headers / caching / compression: add via Loopia panel or
+# restore here only after confirming mod_headers/mod_expires are allowed.
+# ============================================================
+
+# ── SPA routing ──────────────────────────────────────────────
+RewriteEngine On
+RewriteBase /
+
+# Never rewrite Let's Encrypt ACME challenge requests.
+RewriteRule ^\.well-known/acme-challenge/ - [L]
+
+# Never rewrite static asset requests (JS, CSS, fonts, images).
+# Explicit extension check as a fallback in case %{REQUEST_FILENAME}
+# does not resolve correctly on this shared host.
+RewriteRule \.(js|mjs|css|woff2?|ttf|otf|eot|svg|png|jpg|jpeg|gif|ico|webp|avif|json|map)$ - [L]
+
+# Route everything else to index.html for React Router.
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.html [QSA,L]

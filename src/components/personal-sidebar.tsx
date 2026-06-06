@@ -9,6 +9,7 @@ import {
   IconLogout,
   IconLanguage,
   IconSelector,
+  IconUserCircle,
 } from "@tabler/icons-react";
 import {
   Sidebar,
@@ -34,10 +35,11 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useAuth } from "@/contexts/auth-context";
 
 const navItems = [
-  { titleKey: "nav.personalHome",   url: "/personal",            icon: IconHome       },
-  { titleKey: "nav.myTrips",        url: "/personal/trips",      icon: IconRoute      },
-  { titleKey: "personal.statistics",url: "/personal/statistics", icon: IconChartBar   },
-  { titleKey: "personal.export",    url: "/personal/export",     icon: IconFileExport },
+  { titleKey: "nav.personalHome",   url: "/personal",            icon: IconHome         },
+  { titleKey: "nav.myTrips",        url: "/personal/trips",      icon: IconRoute        },
+  { titleKey: "personal.statistics",url: "/personal/statistics", icon: IconChartBar     },
+  { titleKey: "personal.export",    url: "/personal/export",     icon: IconFileExport   },
+  { titleKey: "personal.account",   url: "/personal/account",    icon: IconUserCircle   },
 ];
 
 function getInitials(email: string | undefined): string {

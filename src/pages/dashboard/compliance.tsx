@@ -108,6 +108,7 @@ export function CompliancePage() {
       .select("id, started_at, ended_at, distance_km, start_address, end_address, user_id, vehicle_id")
       .in("user_id", userIds)
       .is("tag", null)
+      .is("superseded_by", null)
       .not("ended_at", "is", null)
       .order("started_at", { ascending: false })
       .limit(100);
@@ -125,7 +126,7 @@ export function CompliancePage() {
 
         if (ovData) {
           for (const ov of ovData) {
-            const v = ov.vehicles as { model: string | null; vin: string | null } | null;
+            const v = (ov.vehicles as unknown) as { model: string | null; vin: string | null } | null;
             const label = ov.display_label || v?.model || (v?.vin ? `…${v.vin.slice(-6)}` : "");
             vehicleLabelMap.set(ov.vehicle_id, label);
           }

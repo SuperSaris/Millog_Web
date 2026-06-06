@@ -39,10 +39,32 @@ serve(async (req) => {
     return new Response(JSON.stringify({ error: "company_name required" }), { status: 400 });
   }
 
+  // Validate org_number: Swedish format NNNNNN-NNNN (optional)
+  if (org_number != null && typeof org_number === "string" && org_number.trim().length > 0) {
+    const cleaned = org_number.trim().replace(/\s/g, "");
+    if (!/^\d{6}-?\d{4}$/.test(cleaned)) {
+      return new Response(
+        JSON.stringify({ error: "org_number must be Swedish format NNNNNN-NNNN" }),
+        { status: 400 },
+      );
+    }
+  }
+
+  // Validate billing_email format (optional)
+  if (billing_email != null && typeof billing_email === "string" && billing_email.trim().length > 0) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(billing_email.trim())) {
+      return new Response(
+        JSON.stringify({ error: "Invalid billing_email format" }),
+        { status: 400 },
+      );
+    }
+  }
+
   // Build insert payload — only include optional fields if provided
   const orgPayload: Record<string, unknown> = {
     name: company_name.trim(),
     org_number: org_number?.trim() || null,
+    created_by: user.id,
   };
 
   if (billing_email && typeof billing_email === "string") {
@@ -76,7 +98,9 @@ serve(async (req) => {
     });
 
   if (memberError) {
-    return new Response(JSON.stringify({ error: memberError.message }), { status: 500 });
+    // Rollback: delete the orphaned organization
+    await supabase.from("organizations").delete().eq("id", org.id);
+    return new Response(JSON.stringify({ error: "Failed to create membership" }), { status: 500 });
   }
 
   return new Response(JSON.stringify({ organization_id: org.id }), {

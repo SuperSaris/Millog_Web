@@ -57,6 +57,7 @@ export function OrgProvider({ children }: { children: ReactNode }) {
   const [membership, setMembership] = useState<OrganizationMember | null>(null);
   const [loading, setLoading] = useState(true);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryCount = useRef(0);
 
   const fetchOrg = useCallback(async () => {
     if (!user) {
@@ -127,7 +128,7 @@ export function OrgProvider({ children }: { children: ReactNode }) {
   // Initial fetch + automatic retry if org is null after signup race condition.
   // When signUp fires, auth state changes immediately but the Edge Function
   // that creates the org membership may still be in-flight. One retry after
-  // 2 s covers this window without risking an infinite loop.
+  // 2 s covers this window. Personal users (no org) stop after that 1 retry.
   useEffect(() => {
     fetchOrg();
     return () => {
@@ -135,10 +136,18 @@ export function OrgProvider({ children }: { children: ReactNode }) {
     };
   }, [fetchOrg]);
 
+  // Reset retry counter whenever the user identity changes.
   useEffect(() => {
-    if (!loading && user && !membership) {
-      // User is authenticated but has no membership — might be a race.
-      // Schedule a single retry after 2 s.
+    retryCount.current = 0;
+  }, [user?.id]);
+
+  useEffect(() => {
+    // Personal users have no org membership — stop after 1 retry to avoid
+    // an infinite loop. The retry covers the race window where the Edge
+    // Function that creates an org membership is still in-flight after signup.
+    const MAX_RETRIES = 1;
+    if (!loading && user && !membership && retryCount.current < MAX_RETRIES) {
+      retryCount.current += 1;
       logger.info("OrgContext", "No membership after fetch — scheduling retry in 2s");
       if (retryTimer.current) clearTimeout(retryTimer.current);
       retryTimer.current = setTimeout(() => {

@@ -75,45 +75,38 @@ export function DriverDetailPage() {
 
     setLoading(true);
 
-    // Fetch profile
-    const { data: profileData } = await supabase
-      .from("profiles")
-      .select("id, full_name, email")
-      .eq("id", id)
-      .single();
+    // Fetch all data in parallel
+    const [profileRes, memberRes, tripRes, assignmentRes] = await Promise.all([
+      supabase
+        .from("profiles")
+        .select("id, full_name, email")
+        .eq("id", id)
+        .single(),
+      supabase
+        .from("organization_members")
+        .select("role, status, invited_at, activated_at")
+        .eq("organization_id", organization.id)
+        .eq("user_id", id)
+        .single(),
+      supabase
+        .from("trips")
+        .select("id, started_at, ended_at, start_address, end_address, distance_km, tag, energy_used_kwh")
+        .eq("user_id", id)
+        .is("superseded_by", null)
+        .order("started_at", { ascending: false })
+        .limit(50),
+      supabase
+        .from("organization_vehicle_assignments")
+        .select("organization_vehicles(display_label, vehicle_id)")
+        .eq("user_id", id)
+        .is("unassigned_at", null),
+    ]);
 
-    if (profileData) setProfile(profileData as DriverProfile);
-
-    // Fetch membership
-    const { data: memberData } = await supabase
-      .from("organization_members")
-      .select("role, status, invited_at, activated_at")
-      .eq("organization_id", organization.id)
-      .eq("user_id", id)
-      .single();
-
-    if (memberData) setMember(memberData as MemberInfo);
-
-    // Fetch recent trips
-    const { data: tripData } = await supabase
-      .from("trips")
-      .select("id, started_at, ended_at, start_address, end_address, distance_km, tag, energy_used_kwh")
-      .eq("user_id", id)
-      .is("superseded_by", null)
-      .order("started_at", { ascending: false })
-      .limit(50);
-
-    if (tripData) setTrips(tripData as Trip[]);
-
-    // Fetch vehicle assignments
-    const { data: assignmentData } = await supabase
-      .from("organization_vehicle_assignments")
-      .select("organization_vehicles(display_label, vehicle_id)")
-      .eq("user_id", id)
-      .is("unassigned_at", null);
-
-    if (assignmentData) {
-      const mapped = assignmentData
+    if (profileRes.data) setProfile(profileRes.data as DriverProfile);
+    if (memberRes.data) setMember(memberRes.data as MemberInfo);
+    if (tripRes.data) setTrips(tripRes.data as Trip[]);
+    if (assignmentRes.data) {
+      const mapped = assignmentRes.data
         .map((a: Record<string, unknown>) => {
           const ov = a.organization_vehicles as Record<string, unknown> | null;
           return ov ? { display_label: ov.display_label as string | null, vehicle_id: ov.vehicle_id as string } : null;

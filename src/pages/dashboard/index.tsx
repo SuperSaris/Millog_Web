@@ -1,4 +1,5 @@
-// DashboardPage — premium fleet overview with live vehicle status, battery health, and trip activity
+﻿// DashboardPage — fleet overview: fleet KPIs, quick actions, driver table, vehicle grid, alerts
+
 import { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -6,77 +7,69 @@ import { useAuth } from "@/contexts/auth-context";
 import { useOrg } from "@/contexts/org-context";
 import { supabase } from "@/lib/supabase";
 import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-  CardFooter,
-  CardAction,
+  Card, CardContent, CardHeader, CardTitle, CardDescription, CardAction, CardFooter,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-  type ChartConfig,
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from "@/components/ui/table";
+import {
+  ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig,
 } from "@/components/ui/chart";
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
-import { MapContainer, TileLayer, Marker } from "react-leaflet";
-import L from "leaflet";
 import {
-  IconRoute,
-  IconBriefcase,
-  IconBolt,
-  IconTag,
-  IconCar,
-  IconMapPin,
-  IconTrendingUp,
-  IconArrowNarrowRight,
-  IconCircleCheck,
-  IconAlertTriangle,
-  IconChevronRight,
+  IconRoute, IconBolt, IconTag, IconCar, IconUsers,
+  IconTrendingUp, IconArrowNarrowRight, IconCircleCheck, IconAlertTriangle,
+  IconChevronRight, IconUserPlus, IconFileText, IconBattery,
 } from "@tabler/icons-react";
 
-// ── Leaflet icon fix ──────────────────────────────────────────
-delete (L.Icon.Default.prototype as any)._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
-  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-});
-const carIcon = new L.DivIcon({
-  html: `<div style="width:14px;height:14px;border-radius:50%;background:#3b82f6;border:3px solid white;box-shadow:0 0 0 3px rgba(59,130,246,.35),0 2px 6px rgba(0,0,0,.3)"></div>`,
-  iconSize: [14, 14], iconAnchor: [7, 7], className: "",
-});
-
 // ── Types ─────────────────────────────────────────────────────
-type TripTag = "work" | "commute" | "personal" | "untagged";
-type TripRow = {
-  id: string; started_at: string; ended_at: string | null;
-  start_address: string | null; end_address: string | null;
-  distance_km: number | null; cost_kr: number | null;
-  tag: TripTag; energy_used_kwh: number | null;
-  end_lat: number | null; end_lng: number | null;
-};
-type VehicleRow = {
-  id: string; display_name: string | null; model: string | null;
-  trim: string | null; battery_kwh_usable: number | null; chemistry: string | null;
-};
-type TelemetryRow = { signal: string; value: unknown; received_at: string };
-type SnapshotRow = { estimated_capacity_kwh: number | null; snapped_at: string };
-
-const MILERSATTNING_PER_KM = 2.5;
-const TAG_STYLES: Record<TripTag, { pill: string; dot: string }> = {
-  work:     { pill: "bg-blue-50 text-blue-700 border-blue-200",      dot: "bg-blue-500"    },
-  commute:  { pill: "bg-amber-50 text-amber-700 border-amber-200",   dot: "bg-amber-500"   },
-  personal: { pill: "bg-emerald-50 text-emerald-700 border-emerald-200", dot: "bg-emerald-500" },
-  untagged: { pill: "bg-gray-100 text-gray-500 border-gray-200",     dot: "bg-gray-400"    },
+type DriverStat = {
+  user_id: string;
+  full_name: string | null;
+  email: string;
+  role: string;
+  km_this_month: number;
+  trip_count: number;
+  untagged_count: number;
+  last_trip_at: string | null;
 };
 
-// ── Signal helpers ────────────────────────────────────────────
+type OrgVehicle = {
+  ov_id: string;
+  vehicle_id: string;
+  display_label: string | null;
+  model: string | null;
+  vin: string | null;
+  soc: number | null;
+  charge_state: string | null;
+  last_seen: string | null;
+  battery_kwh_usable: number | null;
+  telemetry_enabled: boolean;
+};
+
+type FleetTrip = {
+  id: string;
+  started_at: string;
+  ended_at: string | null;
+  start_address: string | null;
+  end_address: string | null;
+  distance_km: number | null;
+  tag: string | null;
+  user_id: string;
+  driver_name: string;
+};
+
+// ── Formatters ────────────────────────────────────────────────
+function fmtDaysAgo(iso: string | null): string {
+  if (!iso) return "—";
+  const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
+  if (diff === 0) return "Idag";
+  if (diff === 1) return "Igår";
+  return `${diff} dagar sedan`;
+}
 function signalNum(value: unknown): number | null {
   if (typeof value === "number") return value;
   if (typeof value === "object" && value !== null) {
@@ -93,63 +86,100 @@ function signalStr(value: unknown): string | null {
   }
   return null;
 }
-function signalLocation(value: unknown): { lat: number; lng: number } | null {
-  if (typeof value !== "object" || value === null) return null;
-  const v = value as Record<string, unknown>;
-  const lat = typeof v["latitude"] === "number" ? v["latitude"]
-    : typeof v["lat"] === "number" ? v["lat"] : null;
-  const lng = typeof v["longitude"] === "number" ? v["longitude"]
-    : typeof v["lng"] === "number" ? v["lng"] : null;
-  if (lat !== null && lng !== null) return { lat, lng };
-  return null;
-}
 
-// ── Battery ring SVG ──────────────────────────────────────────
-function BatteryRing({ pct, color }: { pct: number; color: string }) {
-  const R = 34;
+// ── Battery ring ──────────────────────────────────────────────
+function BatteryRingSmall({ pct, color }: { pct: number; color: string }) {
+  const R = 18;
   const C = 2 * Math.PI * R;
   const offset = C - (pct / 100) * C;
   return (
-    <svg width="84" height="84" viewBox="0 0 84 84" aria-label={`${pct}%`}>
-      <circle cx="42" cy="42" r={R} fill="none" stroke="rgba(0,0,0,0.08)" strokeWidth="7" />
+    <svg width="44" height="44" viewBox="0 0 44 44">
+      <circle cx="22" cy="22" r={R} fill="none" stroke="rgba(0,0,0,0.08)" strokeWidth="5" />
       <circle
-        cx="42" cy="42" r={R} fill="none" stroke={color} strokeWidth="7"
+        cx="22" cy="22" r={R} fill="none" stroke={color} strokeWidth="5"
         strokeLinecap="round"
         strokeDasharray={`${C.toFixed(2)} ${C.toFixed(2)}`}
         strokeDashoffset={offset.toFixed(2)}
-        style={{ transform: "rotate(-90deg)", transformOrigin: "42px 42px", transition: "stroke-dashoffset 0.8s ease" }}
+        style={{ transform: "rotate(-90deg)", transformOrigin: "22px 22px" }}
       />
-      <text x="42" y="47" textAnchor="middle" fill="currentColor" fontSize="15" fontWeight="700">{pct}%</text>
+      <text x="22" y="26" textAnchor="middle" fill="currentColor" fontSize="10" fontWeight="700">{pct}%</text>
     </svg>
   );
 }
 
-// ── SoH health label ──────────────────────────────────────────
-function getSoHInfo(soh: number): { label: string; color: string; cls: string } {
-  if (soh >= 95) return { label: "Utmärkt",   color: "#22c55e", cls: "text-emerald-600" };
-  if (soh >= 88) return { label: "Mycket bra", color: "#84cc16", cls: "text-lime-600"    };
-  if (soh >= 80) return { label: "Bra",        color: "#f59e0b", cls: "text-amber-600"   };
-  if (soh >= 70) return { label: "Acceptabel", color: "#f97316", cls: "text-orange-500"  };
-  return             { label: "Låg",         color: "#ef4444", cls: "text-rose-500"    };
+const TAG_STYLES: Record<string, { pill: string; dot: string }> = {
+  work:     { pill: "bg-blue-50 text-blue-700 border-blue-200",          dot: "bg-blue-500"    },
+  commute:  { pill: "bg-amber-50 text-amber-700 border-amber-200",       dot: "bg-amber-500"   },
+  personal: { pill: "bg-emerald-50 text-emerald-700 border-emerald-200", dot: "bg-emerald-500" },
+  untagged: { pill: "bg-gray-100 text-gray-500 border-gray-200",         dot: "bg-gray-400"    },
+};
+
+// ── Quick Actions Bar ─────────────────────────────────────────
+function QuickActionsBar() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+
+  const actions = [
+    {
+      label: t("dashboard.qaInviteDriver"),
+      icon: <IconUserPlus className="size-4" />,
+      color: "bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200",
+      onClick: () => navigate("/dashboard/drivers"),
+    },
+    {
+      label: t("dashboard.qaAddVehicle"),
+      icon: <IconCar className="size-4" />,
+      color: "bg-violet-50 hover:bg-violet-100 text-violet-700 border-violet-200",
+      onClick: () => navigate("/dashboard/vehicles/import"),
+    },
+    {
+      label: t("dashboard.qaCompliance"),
+      icon: <IconTag className="size-4" />,
+      color: "bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-200",
+      onClick: () => navigate("/dashboard/compliance"),
+    },
+    {
+      label: t("dashboard.qaReport"),
+      icon: <IconFileText className="size-4" />,
+      color: "bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200",
+      onClick: () => navigate("/dashboard/reports"),
+    },
+  ];
+
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      {actions.map((a) => (
+        <button
+          key={a.label}
+          onClick={a.onClick}
+          className={`flex items-center gap-2.5 rounded-xl border px-4 py-3 text-sm font-medium transition-colors cursor-pointer ${a.color}`}
+        >
+          {a.icon}
+          {a.label}
+        </button>
+      ))}
+    </div>
+  );
 }
 
-// ── Formatters ────────────────────────────────────────────────
-function fmtKm(km: number | null) { return km == null ? "—" : `${Math.round(km).toLocaleString("sv-SE")} km`; }
-function fmtKr(kr: number | null) { return kr == null || kr === 0 ? "—" : `${Math.round(kr).toLocaleString("sv-SE")} kr`; }
-function fmtTime(iso: string) { return new Date(iso).toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" }); }
-function fmtDate(iso: string) { return new Date(iso + "T12:00").toLocaleDateString("sv-SE", { day: "numeric", month: "short" }); }
-
-// ── KPI grid cards ────────────────────────────────────────────
-function KpiSectionCards({ trips, loading }: { trips: TripRow[]; loading: boolean }) {
+// ── Fleet KPI Cards ───────────────────────────────────────────
+function FleetKpiCards({
+  driverCount,
+  vehicleCount,
+  fleetKm,
+  tripCount,
+  untaggedCount,
+  loading,
+}: {
+  driverCount: number;
+  vehicleCount: number;
+  fleetKm: number;
+  tripCount: number;
+  untaggedCount: number;
+  loading: boolean;
+}) {
   const { t } = useTranslation();
-  const stats = useMemo(() => {
-    const totalKm  = trips.reduce((s, tr) => s + (tr.distance_km ?? 0), 0);
-    const workKm   = trips.filter(tr => tr.tag === "work" || tr.tag === "commute").reduce((s, tr) => s + (tr.distance_km ?? 0), 0);
-    const elCost   = trips.reduce((s, tr) => s + (tr.cost_kr ?? 0), 0);
-    const milerKr  = workKm * MILERSATTNING_PER_KM;
-    const untagged = trips.filter(tr => !tr.tag || tr.tag === "untagged").length;
-    return { totalKm, workKm, elCost, milerKr, untagged };
-  }, [trips]);
+  const compliancePct = tripCount > 0 ? Math.round(((tripCount - untaggedCount) / tripCount) * 100) : 100;
 
   if (loading) {
     return (
@@ -161,38 +191,34 @@ function KpiSectionCards({ trips, loading }: { trips: TripRow[]; loading: boolea
 
   const cards = [
     {
-      desc: t("dashboard.totalKm"),
-      value: fmtKm(stats.totalKm),
-      sub: `${trips.length} resor`,
-      icon: <IconRoute className="size-4" />,
+      desc: t("dashboard.activeDrivers"),
+      value: driverCount.toString(),
+      sub: t("nav.drivers"),
+      icon: <IconUsers className="size-4" />,
       color: "#3b82f6",
-      trend: null,
     },
     {
-      desc: t("dashboard.workTripsKm"),
-      value: fmtKm(stats.workKm),
-      sub: fmtKr(stats.milerKr) + " milers.",
-      icon: <IconBriefcase className="size-4" />,
+      desc: t("dashboard.totalVehicles"),
+      value: vehicleCount.toString(),
+      sub: t("nav.vehicles"),
+      icon: <IconCar className="size-4" />,
       color: "#8b5cf6",
-      trend: null,
     },
     {
-      desc: t("dashboard.electricityCost"),
-      value: fmtKr(stats.elCost),
-      sub: t("dashboard.thisMonth"),
-      icon: <IconBolt className="size-4" />,
+      desc: t("dashboard.fleetKm"),
+      value: tripCount === 0 ? "0 km" : `${Math.round(fleetKm).toLocaleString("sv-SE")} km`,
+      sub: t("dashboard.fleetKmSub"),
+      icon: <IconRoute className="size-4" />,
       color: "#f59e0b",
-      trend: null,
     },
     {
-      desc: t("dashboard.untaggedTrips"),
-      value: stats.untagged === 0 ? "Alla taggade" : `${stats.untagged} st`,
-      sub: stats.untagged === 0 ? "Bra jobbat!" : "Tagga för skatteunderlag",
-      icon: stats.untagged === 0
+      desc: t("dashboard.complianceRate"),
+      value: `${compliancePct}%`,
+      sub: t("dashboard.complianceRateSub"),
+      icon: compliancePct === 100
         ? <IconCircleCheck className="size-4" />
         : <IconAlertTriangle className="size-4" />,
-      color: stats.untagged === 0 ? "#22c55e" : "#ef4444",
-      trend: null,
+      color: compliancePct === 100 ? "#22c55e" : compliancePct >= 80 ? "#f59e0b" : "#ef4444",
     },
   ];
 
@@ -220,13 +246,12 @@ function KpiSectionCards({ trips, loading }: { trips: TripRow[]; loading: boolea
   );
 }
 
-// ── Activity area chart ───────────────────────────────────────
-const chartConfig: ChartConfig = {
-  km: { label: "km", color: "#3b82f6" },
-};
+// ── Fleet Activity Chart ──────────────────────────────────────
+const chartConfig: ChartConfig = { km: { label: "km", color: "#3b82f6" } };
 
-function ActivityChart({ trips, loading }: { trips: TripRow[]; loading: boolean }) {
+function FleetActivityChart({ trips, loading }: { trips: FleetTrip[]; loading: boolean }) {
   const { t } = useTranslation();
+
   const chartData = useMemo(() => {
     const byDay = new Map<string, number>();
     const now = new Date();
@@ -277,26 +302,10 @@ function ActivityChart({ trips, loading }: { trips: TripRow[]; loading: boolean 
                 </linearGradient>
               </defs>
               <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
-              <XAxis
-                dataKey="label"
-                tick={{ fontSize: 10 }}
-                axisLine={false}
-                tickLine={false}
-                interval={4}
-              />
+              <XAxis dataKey="label" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} interval={4} />
               <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={36} />
-              <ChartTooltip
-                content={<ChartTooltipContent indicator="line" />}
-                cursor={{ stroke: "rgba(0,0,0,0.08)", strokeWidth: 28 }}
-              />
-              <Area
-                dataKey="km"
-                stroke="#3b82f6"
-                strokeWidth={2}
-                fill="url(#kmGradient)"
-                dot={false}
-                activeDot={{ r: 4, fill: "#3b82f6" }}
-              />
+              <ChartTooltip content={<ChartTooltipContent indicator="line" />} cursor={{ stroke: "rgba(0,0,0,0.08)", strokeWidth: 28 }} />
+              <Area dataKey="km" stroke="#3b82f6" strokeWidth={2} fill="url(#kmGradient)" dot={false} activeDot={{ r: 4, fill: "#3b82f6" }} />
             </AreaChart>
           </ChartContainer>
         )}
@@ -305,118 +314,61 @@ function ActivityChart({ trips, loading }: { trips: TripRow[]; loading: boolean 
   );
 }
 
-// ── Vehicle status card ────────────────────────────────────────
-function VehicleStatusCard({
-  vehicle, telemetry, lastTripEnd, loading,
+// ── Alerts Panel ──────────────────────────────────────────────
+function AlertsPanel({
+  drivers,
+  vehicles,
+  loading,
 }: {
-  vehicle: VehicleRow | null;
-  telemetry: TelemetryRow[];
-  lastTripEnd: { lat: number; lng: number } | null;
+  drivers: DriverStat[];
+  vehicles: OrgVehicle[];
   loading: boolean;
 }) {
   const { t } = useTranslation();
 
-  const socSignal = telemetry.find(s => s.signal === "Soc" || s.signal === "BatteryLevel");
-  const locationSignal = telemetry.find(s => s.signal === "Location" || s.signal === "VehicleLocation");
-  const chargeSignal = telemetry.find(s => s.signal === "ChargeState");
-
-  const soc = socSignal ? signalNum(socSignal.value) : null;
-  const location = locationSignal ? signalLocation(locationSignal.value) : null;
-  const mapLocation = location ?? lastTripEnd;
-  const chargeState = chargeSignal ? signalStr(chargeSignal.value) : null;
-
-  const isCharging = chargeState?.toLowerCase().includes("charging") && !chargeState?.toLowerCase().includes("complete");
-  const isFull = chargeState?.toLowerCase().includes("complete");
-
-  const battColor = soc != null
-    ? soc >= 70 ? "#22c55e" : soc >= 40 ? "#f59e0b" : "#ef4444"
-    : "#9ca3af";
-
-  const statusLabel = isCharging ? t("dashboard.charging")
-    : isFull ? t("dashboard.charged")
-    : t("dashboard.parked");
-
-  const statusColor = isCharging
-    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-    : "bg-gray-100 text-gray-500 border-gray-200";
-
-  if (loading) return <Skeleton className="h-64 rounded-2xl" />;
-
-  if (!vehicle) {
-    return (
-      <Card>
-        <CardContent className="flex flex-col items-center justify-center h-48 gap-3">
-          <div className="w-12 h-12 rounded-2xl bg-muted flex items-center justify-center">
-            <IconCar className="size-6 text-muted-foreground/40" />
-          </div>
-          <p className="text-sm text-muted-foreground">{t("dashboard.noVehicle")}</p>
-        </CardContent>
-      </Card>
-    );
-  }
+  const alerts = useMemo(() => {
+    const items: { type: "warning" | "info"; message: string }[] = [];
+    for (const d of drivers) {
+      if (d.untagged_count > 5) {
+        items.push({ type: "warning", message: t("dashboard.alertUntaggedDriver", { name: d.full_name || d.email.split("@")[0], count: d.untagged_count }) });
+      }
+    }
+    for (const v of vehicles) {
+      if (v.soc != null && v.soc < 20) {
+        items.push({ type: "warning", message: t("dashboard.alertLowBattery", { name: v.display_label || v.model || "Fordon", pct: v.soc }) });
+      }
+    }
+    for (const v of vehicles) {
+      if (v.telemetry_enabled && !v.last_seen) {
+        items.push({ type: "info", message: t("dashboard.alertNoTelemetry", { name: v.display_label || v.model || "Fordon" }) });
+      }
+    }
+    return items;
+  }, [drivers, vehicles, t]);
 
   return (
-    <Card className="overflow-hidden">
+    <Card>
       <CardHeader>
-        <div className="flex items-center justify-between">
-          <div>
-            <CardDescription>{t("dashboard.vehicleStatus")}</CardDescription>
-            <CardTitle className="text-base font-semibold mt-0.5">
-              {vehicle.display_name ?? vehicle.model ?? "Tesla"}
-            </CardTitle>
-          </div>
-          <Badge variant="outline" className={`text-xs border ${statusColor}`}>
-            {isCharging && <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1 animate-pulse" />}
-            {statusLabel}
-          </Badge>
-        </div>
+        <CardTitle className="text-base">{t("dashboard.alertsTitle")}</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-4">
-        {/* Battery + SoC ring */}
-        <div className="flex items-center gap-4">
-          {soc != null ? (
-            <BatteryRing pct={soc} color={battColor} />
-          ) : (
-            <div className="w-21 h-21 rounded-full border-[7px] border-muted flex items-center justify-center">
-              <span className="text-xs text-muted-foreground">—</span>
-            </div>
-          )}
-          <div className="space-y-1">
-            <p className="text-sm font-medium">{t("dashboard.batteryHealth")}</p>
-            {soc != null && (
-              <p className="text-2xl font-bold tabular-nums" style={{ color: battColor }}>{soc}%</p>
-            )}
-            {vehicle.battery_kwh_usable != null && (
-              <p className="text-xs text-muted-foreground">
-                {vehicle.battery_kwh_usable} kWh kapacitet
-              </p>
-            )}
-            {vehicle.trim && (
-              <p className="text-xs text-muted-foreground truncate max-w-35">{vehicle.trim}</p>
-            )}
+      <CardContent>
+        {loading ? (
+          <div className="space-y-2">
+            {[1, 2].map((i) => <Skeleton key={i} className="h-10 rounded-lg" />)}
           </div>
-        </div>
-
-        {/* Mini parking map */}
-        {mapLocation ? (
-          <div className="rounded-xl overflow-hidden border" style={{ height: 160 }}>
-            <MapContainer
-              center={[mapLocation.lat, mapLocation.lng]}
-              zoom={15}
-              scrollWheelZoom={false}
-              dragging={false}
-              zoomControl={false}
-              attributionControl={false}
-              style={{ height: "100%", width: "100%" }}
-            >
-              <TileLayer url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png" />
-              <Marker position={[mapLocation.lat, mapLocation.lng]} icon={carIcon} />
-            </MapContainer>
+        ) : alerts.length === 0 ? (
+          <div className="flex items-center gap-2.5 rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-3">
+            <IconCircleCheck className="size-4 text-emerald-600 shrink-0" />
+            <span className="text-sm text-emerald-700 font-medium">{t("dashboard.allGood")}</span>
           </div>
         ) : (
-          <div className="rounded-xl bg-muted/30 border flex items-center justify-center gap-2" style={{ height: 100 }}>
-            <IconMapPin className="size-4 text-muted-foreground/40" />
-            <span className="text-xs text-muted-foreground">{t("dashboard.locationUnknown")}</span>
+          <div className="space-y-2">
+            {alerts.map((a, i) => (
+              <div key={i} className={`flex items-start gap-2.5 rounded-xl border px-4 py-3 ${a.type === "warning" ? "bg-amber-50 border-amber-200" : "bg-blue-50 border-blue-200"}`}>
+                <IconAlertTriangle className={`size-4 shrink-0 mt-0.5 ${a.type === "warning" ? "text-amber-600" : "text-blue-600"}`} />
+                <span className={`text-sm font-medium ${a.type === "warning" ? "text-amber-700" : "text-blue-700"}`}>{a.message}</span>
+              </div>
+            ))}
           </div>
         )}
       </CardContent>
@@ -424,169 +376,145 @@ function VehicleStatusCard({
   );
 }
 
-// ── Battery health card ────────────────────────────────────────
-function BatteryHealthCard({
-  vehicle, snapshots, loading,
-}: {
-  vehicle: VehicleRow | null; snapshots: SnapshotRow[]; loading: boolean;
-}) {
-  const { t } = useTranslation();
-
-  const latest = snapshots.find(s => s.estimated_capacity_kwh != null);
-  const usable = vehicle?.battery_kwh_usable ?? null;
-  const soh = latest && usable
-    ? Math.round((latest.estimated_capacity_kwh! / usable) * 100)
-    : null;
-  const health = soh != null ? getSoHInfo(soh) : null;
-
-  // Sparkline data: last 5 snapshots' SoH
-  const sparkData = snapshots
-    .filter(s => s.estimated_capacity_kwh != null)
-    .slice(0, 5)
-    .reverse()
-    .map(s => ({ value: usable ? Math.round((s.estimated_capacity_kwh! / usable) * 100) : 0 }));
-
-  if (loading) return <Skeleton className="h-48 rounded-2xl" />;
-
-  const iconEl = soh == null ? null
-    : soh >= 80 ? <IconCircleCheck className="size-4" />
-    : <IconAlertTriangle className="size-4" />;
-
-  return (
-    <Card className="@container/card">
-      <CardHeader>
-        <CardDescription>{t("dashboard.batteryHealth")}</CardDescription>
-        <CardTitle className="text-2xl font-semibold tabular-nums @[200px]/card:text-3xl">
-          {soh != null ? `${soh}%` : "—"}
-        </CardTitle>
-        {health && (
-          <CardAction>
-            <Badge
-              variant="outline"
-              className="text-xs border"
-              style={{ color: health.color, borderColor: health.color + "44", backgroundColor: health.color + "10" }}
-            >
-              {iconEl} {health.label}
-            </Badge>
-          </CardAction>
-        )}
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {health && (
-          <div className="h-2 rounded-full bg-muted overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all duration-700"
-              style={{ width: `${soh}%`, backgroundColor: health.color }}
-            />
-          </div>
-        )}
-        {usable != null && latest && (
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <div className="rounded-lg bg-muted/50 p-2.5">
-              <p className="text-muted-foreground">{t("dashboard.batteryEstimated")}</p>
-              <p className="font-semibold mt-0.5">{latest.estimated_capacity_kwh!.toFixed(1)} kWh</p>
-            </div>
-            <div className="rounded-lg bg-muted/50 p-2.5">
-              <p className="text-muted-foreground">{t("dashboard.batteryOriginal")}</p>
-              <p className="font-semibold mt-0.5">{usable.toFixed(1)} kWh</p>
-            </div>
-          </div>
-        )}
-        {sparkData.length > 0 && (
-          <div>
-            <p className="text-xs text-muted-foreground mb-1">Trend ({sparkData.length} mätningar)</p>
-            <div className="flex items-end gap-1 h-8">
-              {sparkData.map((d, i) => (
-                <div
-                  key={i}
-                  className="flex-1 rounded-sm"
-                  style={{
-                    height: `${Math.max(10, d.value)}%`,
-                    backgroundColor: i === sparkData.length - 1
-                      ? (health?.color ?? "#3b82f6")
-                      : (health?.color ?? "#3b82f6") + "55",
-                  }}
-                />
-              ))}
-            </div>
-          </div>
-        )}
-        {!latest && (
-          <p className="text-xs text-muted-foreground">{t("dashboard.noSnapshotData")}</p>
-        )}
-        {latest && (
-          <p className="text-xs text-muted-foreground">{t("dashboard.batterySnapshot")}: {fmtDate(latest.snapped_at)}</p>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ── Recent trips card ──────────────────────────────────────────
-function RecentTripsCard({ trips, loading }: { trips: TripRow[]; loading: boolean }) {
+// ── Driver Table ──────────────────────────────────────────────
+function DriverTable({ drivers, loading }: { drivers: DriverStat[]; loading: boolean }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-
-  const tagLabels: Record<TripTag, string> = {
-    work: t("personal.tagWork"), commute: t("personal.tagCommute"),
-    personal: t("personal.tagPersonal"), untagged: t("personal.tagUntagged"),
-  };
 
   return (
     <Card>
       <CardHeader>
         <div className="flex items-center justify-between">
           <div>
-            <CardDescription>{t("dashboard.recentTrips")}</CardDescription>
-            <CardTitle className="text-base font-semibold mt-0.5">Senaste 5 resorna</CardTitle>
+            <CardTitle className="text-base">{t("dashboard.driverTableTitle")}</CardTitle>
+            <CardDescription>{t("dashboard.driverTableDesc")}</CardDescription>
           </div>
-          <Button variant="ghost" size="sm" className="gap-1 text-xs" onClick={() => navigate("/personal")}>
-            {t("dashboard.seeAll")}
-            <IconChevronRight className="size-3.5" />
+          <Button variant="ghost" size="sm" className="gap-1 text-xs" onClick={() => navigate("/dashboard/drivers")}>
+            {t("dashboard.seeAll")} <IconChevronRight className="size-3.5" />
           </Button>
         </div>
       </CardHeader>
       <CardContent>
         {loading ? (
-          <div className="space-y-2">
-            {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-14 rounded-xl" />)}
-          </div>
-        ) : trips.length === 0 ? (
-          <div className="flex items-center justify-center py-10 text-sm text-muted-foreground">
-            {t("dashboard.noTrips")}
+          <div className="space-y-2">{[1,2,3].map((i) => <Skeleton key={i} className="h-12 rounded-lg" />)}</div>
+        ) : drivers.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-8 gap-2">
+            <IconUsers className="size-8 text-muted-foreground/30" />
+            <p className="text-sm text-muted-foreground">{t("dashboard.noDriverStats")}</p>
+            <Button size="sm" variant="outline" onClick={() => navigate("/dashboard/drivers")} className="mt-2">
+              <IconUserPlus className="size-4 mr-1.5" />{t("dashboard.qaInviteDriver")}
+            </Button>
           </div>
         ) : (
           <div className="rounded-xl border overflow-hidden">
-            {trips.map((trip, idx) => {
-              const tag = (trip.tag ?? "untagged") as TripTag;
-              const ts = TAG_STYLES[tag] ?? TAG_STYLES.untagged;
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-muted/40">
+                  <TableHead>{t("dashboard.colDriver")}</TableHead>
+                  <TableHead className="text-right">{t("dashboard.colKm")}</TableHead>
+                  <TableHead className="text-right">{t("dashboard.colTrips")}</TableHead>
+                  <TableHead className="text-right hidden sm:table-cell">{t("dashboard.colUntagged")}</TableHead>
+                  <TableHead className="text-right hidden md:table-cell">{t("dashboard.colLastTrip")}</TableHead>
+                  <TableHead className="text-right">{t("dashboard.colCompliance")}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {drivers.map((d) => {
+                  const pct = d.trip_count > 0 ? Math.round(((d.trip_count - d.untagged_count) / d.trip_count) * 100) : 100;
+                  const compColor = pct === 100 ? "text-emerald-600" : pct >= 80 ? "text-amber-600" : "text-rose-600";
+                  return (
+                    <TableRow key={d.user_id} className="cursor-pointer hover:bg-muted/30" onClick={() => navigate(`/dashboard/drivers/${d.user_id}`)}>
+                      <TableCell>
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                            <span className="text-xs font-semibold text-primary">{(d.full_name || d.email).charAt(0).toUpperCase()}</span>
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium truncate max-w-36">{d.full_name || d.email.split("@")[0]}</p>
+                            <p className="text-xs text-muted-foreground truncate max-w-36">{d.email}</p>
+                          </div>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-sm font-medium">{Math.round(d.km_this_month).toLocaleString("sv-SE")}</TableCell>
+                      <TableCell className="text-right tabular-nums text-sm text-muted-foreground">{d.trip_count}</TableCell>
+                      <TableCell className="text-right tabular-nums text-sm hidden sm:table-cell">
+                        {d.untagged_count > 0 ? <span className="text-amber-600 font-medium">{d.untagged_count}</span> : <span className="text-muted-foreground">0</span>}
+                      </TableCell>
+                      <TableCell className="text-right text-xs text-muted-foreground hidden md:table-cell">{fmtDaysAgo(d.last_trip_at)}</TableCell>
+                      <TableCell className="text-right">
+                        <span className={`text-sm font-semibold tabular-nums ${compColor}`}>{pct}%</span>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Vehicle Grid ──────────────────────────────────────────────
+function VehicleGrid({ vehicles, loading }: { vehicles: OrgVehicle[]; loading: boolean }) {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="text-base">{t("dashboard.vehicleGridTitle")}</CardTitle>
+            <CardDescription>{t("dashboard.vehicleGridDesc")}</CardDescription>
+          </div>
+          <Button variant="ghost" size="sm" className="gap-1 text-xs" onClick={() => navigate("/dashboard/vehicles")}>
+            {t("dashboard.seeAll")} <IconChevronRight className="size-3.5" />
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {loading ? (
+          <div className="space-y-2">{[1,2].map((i) => <Skeleton key={i} className="h-16 rounded-xl" />)}</div>
+        ) : vehicles.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-8 gap-2">
+            <IconCar className="size-8 text-muted-foreground/30" />
+            <p className="text-sm text-muted-foreground">{t("dashboard.noVehicleData")}</p>
+            <Button size="sm" variant="outline" onClick={() => navigate("/dashboard/vehicles/import")} className="mt-2">
+              <IconCar className="size-4 mr-1.5" />{t("dashboard.qaAddVehicle")}
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {vehicles.map((v) => {
+              const battColor = v.soc == null ? "#9ca3af" : v.soc >= 70 ? "#22c55e" : v.soc >= 40 ? "#f59e0b" : "#ef4444";
+              const isCharging = v.charge_state?.toLowerCase().includes("charging") && !v.charge_state?.toLowerCase().includes("complete");
+              const stateLabel = isCharging ? t("dashboard.charging")
+                : v.charge_state?.toLowerCase().includes("complete") ? t("dashboard.charged")
+                : t("dashboard.parked");
               return (
-                <div
-                  key={trip.id}
-                  className={`flex items-center gap-3 px-4 py-3 border-b last:border-b-0 ${idx % 2 === 0 ? "bg-card" : "bg-muted/20"}`}
-                >
-                  <span className={`w-2 h-2 rounded-full shrink-0 ${ts.dot}`} />
+                <div key={v.ov_id} className="flex items-center gap-3 rounded-xl border px-4 py-3 hover:bg-muted/30 transition-colors cursor-pointer" onClick={() => navigate("/dashboard/vehicles")}>
+                  {v.soc != null ? (
+                    <BatteryRingSmall pct={v.soc} color={battColor} />
+                  ) : (
+                    <div className="w-11 h-11 rounded-full border-[5px] border-muted flex items-center justify-center shrink-0">
+                      <IconBattery className="size-4 text-muted-foreground/40" />
+                    </div>
+                  )}
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1 text-sm font-medium leading-tight">
-                      <span className="truncate max-w-28 text-foreground">
-                        {trip.start_address?.split(",")[0] ?? "—"}
-                      </span>
-                      <IconArrowNarrowRight className="size-3 shrink-0 text-muted-foreground" />
-                      <span className="truncate max-w-28 text-foreground">
-                        {trip.end_address?.split(",")[0] ?? "—"}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1.5 mt-0.5">
-                      <span className="text-xs text-muted-foreground">{fmtDate(trip.started_at)} · {fmtTime(trip.started_at)}</span>
-                      <Badge variant="outline" className={`text-xs border h-4 px-1.5 ${ts.pill}`}>
-                        {tagLabels[tag]}
-                      </Badge>
-                    </div>
+                    <p className="text-sm font-medium truncate">{v.display_label || v.model || "Tesla"}</p>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {v.vin ? `…${v.vin.slice(-6)}` : ""}{v.vin && v.battery_kwh_usable ? " · " : ""}{v.battery_kwh_usable ? `${v.battery_kwh_usable} kWh` : ""}
+                    </p>
                   </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-sm font-semibold tabular-nums">{fmtKm(trip.distance_km)}</p>
-                    {trip.cost_kr != null && trip.cost_kr > 0 && (
-                      <p className="text-xs text-amber-600 tabular-nums">{fmtKr(trip.cost_kr)}</p>
+                  <div className="flex flex-col items-end gap-1 shrink-0">
+                    <Badge variant="outline" className={`text-xs ${isCharging ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
+                      {isCharging && <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1 animate-pulse" />}
+                      {stateLabel}
+                    </Badge>
+                    {v.telemetry_enabled && (
+                      <Badge variant="outline" className="text-xs bg-blue-50 text-blue-600 border-blue-200">{t("vehicles.telemetryActive")}</Badge>
                     )}
                   </div>
                 </div>
@@ -599,32 +527,76 @@ function RecentTripsCard({ trips, loading }: { trips: TripRow[]; loading: boolea
   );
 }
 
-// ── Welcome onboarding (no org) ───────────────────────────────
-function WelcomeOnboarding() {
+// ── Recent Fleet Trips ─────────────────────────────────────────
+function RecentFleetTrips({ trips, loading }: { trips: FleetTrip[]; loading: boolean }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
 
-  const steps = [
-    {
-      icon: <IconRoute className="size-5" />,
-      title: t("dashboard.onboardingStep1Title"),
-      desc: t("dashboard.onboardingStep1Desc"),
-      color: "#3b82f6",
-    },
-    {
-      icon: <IconCar className="size-5" />,
-      title: t("dashboard.onboardingStep2Title"),
-      desc: t("dashboard.onboardingStep2Desc"),
-      color: "#8b5cf6",
-    },
-    {
-      icon: <IconTrendingUp className="size-5" />,
-      title: t("dashboard.onboardingStep3Title"),
-      desc: t("dashboard.onboardingStep3Desc"),
-      color: "#22c55e",
-    },
-  ];
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="text-base">{t("dashboard.fleetRecentTrips")}</CardTitle>
+            <CardDescription>{t("dashboard.fleetRecentTripsDesc")}</CardDescription>
+          </div>
+          <Button variant="ghost" size="sm" className="gap-1 text-xs" onClick={() => navigate("/dashboard/compliance")}>
+            {t("dashboard.seeAll")} <IconChevronRight className="size-3.5" />
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {loading ? (
+          <div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-14 rounded-xl" />)}</div>
+        ) : trips.length === 0 ? (
+          <div className="flex items-center justify-center py-10 text-sm text-muted-foreground">{t("dashboard.noTrips")}</div>
+        ) : (
+          <div className="rounded-xl border overflow-hidden">
+            {trips.map((trip, idx) => {
+              const tag = trip.tag ?? "untagged";
+              const ts = (TAG_STYLES[tag as keyof typeof TAG_STYLES] ?? TAG_STYLES.untagged)!;
+              const tagLabels: Record<string, string> = {
+                work: t("personal.tagWork"), commute: t("personal.tagCommute"),
+                personal: t("personal.tagPersonal"), untagged: t("personal.tagUntagged"),
+              };
+              const startedAt = new Date(trip.started_at);
+              const dateStr = startedAt.toLocaleDateString("sv-SE", { day: "numeric", month: "short" });
+              const timeStr = startedAt.toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" });
+              return (
+                <div key={trip.id} className={`flex items-center gap-3 px-4 py-3 border-b last:border-b-0 ${idx % 2 === 0 ? "bg-card" : "bg-muted/20"}`}>
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${ts.dot}`} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1 text-sm font-medium leading-tight">
+                      <span className="truncate max-w-28">{trip.start_address?.split(",")[0] ?? "—"}</span>
+                      <IconArrowNarrowRight className="size-3 shrink-0 text-muted-foreground" />
+                      <span className="truncate max-w-28">{trip.end_address?.split(",")[0] ?? "—"}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                      <span className="text-xs text-muted-foreground">{dateStr} · {timeStr}</span>
+                      <span className="text-xs text-muted-foreground">·</span>
+                      <span className="text-xs font-medium text-muted-foreground">{trip.driver_name}</span>
+                      <Badge variant="outline" className={`text-xs border h-4 px-1.5 ${ts.pill}`}>{tagLabels[tag] ?? tag}</Badge>
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-sm font-semibold tabular-nums">
+                      {trip.distance_km != null ? `${Math.round(trip.distance_km).toLocaleString("sv-SE")} km` : "—"}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
+// ── Onboarding empty state (no org) ──────────────────────────
+function WelcomeOnboarding() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
   return (
     <div className="space-y-8">
       <div className="text-center py-8">
@@ -633,89 +605,37 @@ function WelcomeOnboarding() {
         </div>
         <h1 className="text-3xl font-bold tracking-tight">{t("dashboard.welcomeTitle")}</h1>
         <p className="mt-2 text-muted-foreground max-w-md mx-auto">{t("dashboard.welcomeSubtitle")}</p>
-        <Button className="mt-6" size="lg" onClick={() => navigate("/signup")}>
-          {t("dashboard.createOrgButton")}
-        </Button>
-      </div>
-
-      <div className="grid gap-4 sm:grid-cols-3">
-        {steps.map((step) => (
-          <Card key={step.title}>
-            <CardContent className="pt-6">
-              <div className="flex items-start gap-3">
-                <div className="rounded-lg p-2" style={{ backgroundColor: step.color + "18" }}>
-                  <span style={{ color: step.color }}>{step.icon}</span>
-                </div>
-                <div>
-                  <p className="font-semibold">{step.title}</p>
-                  <p className="text-sm text-muted-foreground mt-0.5">{step.desc}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+        <Button className="mt-6" size="lg" onClick={() => navigate("/signup")}>{t("dashboard.createOrgButton")}</Button>
       </div>
     </div>
   );
 }
 
-// ── Getting-started checklist (has org but empty) ─────────────
-function GettingStartedBanner({
-  driverCount,
-  vehicleCount,
-}: {
-  driverCount: number;
-  vehicleCount: number;
-}) {
+// ── Getting-started banner ────────────────────────────────────
+function GettingStartedBanner({ driverCount, vehicleCount }: { driverCount: number; vehicleCount: number }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-
   const steps = [
-    {
-      done: driverCount > 1, // >1 because admin is member 0
-      label: t("dashboard.stepInviteDrivers"),
-      action: () => navigate("/dashboard/drivers"),
-    },
-    {
-      done: vehicleCount > 0,
-      label: t("dashboard.stepAddVehicles"),
-      action: () => navigate("/dashboard/vehicles"),
-    },
-    {
-      done: true, // settings always exists
-      label: t("dashboard.stepReviewSettings"),
-      action: () => navigate("/dashboard/settings"),
-    },
+    { done: driverCount > 1, label: t("dashboard.stepInviteDrivers"), action: () => navigate("/dashboard/drivers") },
+    { done: vehicleCount > 0, label: t("dashboard.stepAddVehicles"), action: () => navigate("/dashboard/vehicles") },
+    { done: true, label: t("dashboard.stepReviewSettings"), action: () => navigate("/dashboard/settings") },
   ];
-
-  const allDone = steps.every((s) => s.done);
-  if (allDone) return null;
-
+  if (steps.every((s) => s.done)) return null;
   return (
     <Card className="border-primary/20 bg-primary/5">
-      <CardContent className="pt-6">
+      <CardContent className="pt-5 pb-5">
         <div className="flex items-start gap-3">
-          <div className="rounded-lg p-2 bg-primary/10">
+          <div className="rounded-lg p-2 bg-primary/10 shrink-0">
             <IconCircleCheck className="size-5 text-primary" />
           </div>
           <div className="flex-1">
             <p className="font-semibold">{t("dashboard.getStartedTitle")}</p>
             <p className="text-sm text-muted-foreground mt-0.5">{t("dashboard.getStartedDesc")}</p>
-            <div className="mt-4 space-y-2">
+            <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1.5">
               {steps.map((step) => (
-                <button
-                  key={step.label}
-                  onClick={step.action}
-                  className="flex items-center gap-2 text-sm w-full text-left hover:underline cursor-pointer"
-                >
-                  {step.done ? (
-                    <IconCircleCheck className="size-4 text-emerald-500 shrink-0" />
-                  ) : (
-                    <div className="size-4 rounded-full border-2 border-muted-foreground/30 shrink-0" />
-                  )}
-                  <span className={step.done ? "text-muted-foreground line-through" : "font-medium"}>
-                    {step.label}
-                  </span>
+                <button key={step.label} onClick={step.action} className="flex items-center gap-2 text-sm hover:underline cursor-pointer">
+                  {step.done ? <IconCircleCheck className="size-4 text-emerald-500 shrink-0" /> : <div className="size-4 rounded-full border-2 border-muted-foreground/30 shrink-0" />}
+                  <span className={step.done ? "text-muted-foreground line-through" : "font-medium"}>{step.label}</span>
                 </button>
               ))}
             </div>
@@ -726,124 +646,173 @@ function GettingStartedBanner({
   );
 }
 
-// ── Main page ─────────────────────────────────────────────────
+// ── Main Page ─────────────────────────────────────────────────
 export function DashboardPage() {
   const { t } = useTranslation();
   const { user } = useAuth();
   const { organization, loading: orgLoading } = useOrg();
 
-  const [trips, setTrips]           = useState<TripRow[]>([]);
-  const [vehicle, setVehicle]       = useState<VehicleRow | null>(null);
-  const [telemetry, setTelemetry]   = useState<TelemetryRow[]>([]);
-  const [snapshots, setSnapshots]   = useState<SnapshotRow[]>([]);
-  const [recentTrips, setRecentTrips] = useState<TripRow[]>([]);
-  const [loading, setLoading]       = useState(true);
+  const [drivers, setDrivers]         = useState<DriverStat[]>([]);
+  const [orgVehicles, setOrgVehicles] = useState<OrgVehicle[]>([]);
+  const [fleetTrips, setFleetTrips]   = useState<FleetTrip[]>([]);
+  const [allTrips, setAllTrips]       = useState<FleetTrip[]>([]);
   const [driverCount, setDriverCount] = useState(0);
   const [vehicleCount, setVehicleCount] = useState(0);
+  const [loading, setLoading]         = useState(true);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !organization) return;
 
-    // Fetch org member/vehicle counts for getting-started banner
-    if (organization) {
-      supabase
-        .from("organization_members")
-        .select("id", { count: "exact", head: true })
-        .eq("organization_id", organization.id)
-        .eq("status", "active")
-        .then(({ count }) => setDriverCount(count ?? 0));
-      supabase
-        .from("organization_vehicles")
-        .select("id", { count: "exact", head: true })
-        .eq("organization_id", organization.id)
-        .then(({ count }) => setVehicleCount(count ?? 0));
-    }
-
-    const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+    const today = new Date();
+    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString();
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     const rangeStart = monthStart < thirtyDaysAgo ? thirtyDaysAgo : monthStart;
 
-    // Fetch all data in parallel
-    Promise.all([
-      // Monthly trips for stats + activity chart
-      supabase
-        .from("trips")
-        .select("id, started_at, ended_at, start_address, end_address, distance_km, cost_kr, tag, energy_used_kwh, end_lat, end_lng")
-        .eq("user_id", user.id)
-        .is("superseded_by", null)
-        .gte("started_at", rangeStart)
-        .order("started_at", { ascending: true })
-        .limit(500),
-      // Recent 5 trips
-      supabase
-        .from("trips")
-        .select("id, started_at, ended_at, start_address, end_address, distance_km, cost_kr, tag, energy_used_kwh, end_lat, end_lng")
-        .eq("user_id", user.id)
-        .is("superseded_by", null)
-        .order("started_at", { ascending: false })
-        .limit(5),
-      // First vehicle
-      supabase
-        .from("vehicles")
-        .select("id, display_name, model, trim, battery_kwh_usable, chemistry")
-        .eq("user_id", user.id)
-        .limit(1)
-        .maybeSingle(),
-    ]).then(([tripsRes, recentRes, vehicleRes]) => {
-      if (!tripsRes.error && tripsRes.data) setTrips(tripsRes.data as TripRow[]);
-      if (!recentRes.error && recentRes.data) setRecentTrips(recentRes.data as TripRow[]);
-      const v = vehicleRes.data as VehicleRow | null;
-      if (v) {
-        setVehicle(v);
-        // Now fetch telemetry + battery snapshots for this vehicle
-        Promise.all([
-          supabase
-            .from("vehicle_telemetry_cache")
-            .select("signal, value, received_at")
-            .eq("vehicle_id", v.id)
-            .in("signal", ["Soc", "BatteryLevel", "Location", "VehicleLocation", "ChargeState", "Gear"]),
-          supabase
-            .from("battery_snapshots")
-            .select("estimated_capacity_kwh, snapped_at")
-            .eq("vehicle_id", v.id)
-            .eq("user_id", user.id)
-            .not("estimated_capacity_kwh", "is", null)
-            .order("snapped_at", { ascending: false })
-            .limit(8),
-        ]).then(([telRes, snapRes]) => {
-          if (!telRes.error && telRes.data) setTelemetry(telRes.data as TelemetryRow[]);
-          if (!snapRes.error && snapRes.data) setSnapshots(snapRes.data as SnapshotRow[]);
+    supabase
+      .from("organization_members")
+      .select("user_id, role, status, profiles(full_name, email)")
+      .eq("organization_id", organization.id)
+      .eq("status", "active")
+      .then(async ({ data: members }) => {
+        if (!members || members.length === 0) {
           setLoading(false);
+          return;
+        }
+        setDriverCount(members.length);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const memberIds = members.map((m: any) => m.user_id as string);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const memberMap = new Map<string, { full_name: string | null; email: string }>(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          members.map((m: any) => {
+            const p = m.profiles as { full_name: string | null; email: string } | null;
+            return [m.user_id as string, { full_name: p?.full_name ?? null, email: p?.email ?? "?" }];
+          }),
+        );
+
+        const [monthTripsRes, recentTripsRes, vehiclesRes] = await Promise.all([
+          supabase
+            .from("trips")
+            .select("id, started_at, ended_at, start_address, end_address, distance_km, tag, user_id")
+            .in("user_id", memberIds)
+            .is("superseded_by", null)
+            .gte("started_at", rangeStart)
+            .not("ended_at", "is", null)
+            .order("started_at", { ascending: true })
+            .limit(2000),
+          supabase
+            .from("trips")
+            .select("id, started_at, ended_at, start_address, end_address, distance_km, tag, user_id")
+            .in("user_id", memberIds)
+            .is("superseded_by", null)
+            .not("ended_at", "is", null)
+            .order("started_at", { ascending: false })
+            .limit(10),
+          supabase
+            .from("organization_vehicles")
+            .select("id, vehicle_id, display_label, vehicles(model, vin, battery_kwh_usable, telemetry_enabled)")
+            .eq("organization_id", organization.id),
+        ]);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const toFleetTrip = (tr: any): FleetTrip => ({
+          id: tr.id,
+          started_at: tr.started_at,
+          ended_at: tr.ended_at,
+          start_address: tr.start_address,
+          end_address: tr.end_address,
+          distance_km: tr.distance_km,
+          tag: tr.tag,
+          user_id: tr.user_id,
+          driver_name: memberMap.get(tr.user_id)?.full_name || memberMap.get(tr.user_id)?.email?.split("@")[0] || "?",
         });
-      } else {
+
+        const monthTrips = (monthTripsRes.data ?? []).map(toFleetTrip);
+        const recentTrips = (recentTripsRes.data ?? []).map(toFleetTrip);
+        setAllTrips(monthTrips);
+        setFleetTrips(recentTrips);
+
+        // Per-driver stats
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const driverStats: DriverStat[] = members.map((m: any) => {
+          const uid = m.user_id as string;
+          const info = memberMap.get(uid)!;
+          const myTrips = monthTrips.filter((tr) => tr.user_id === uid);
+          const lastTrip = myTrips[myTrips.length - 1];
+          return {
+            user_id: uid,
+            full_name: info.full_name,
+            email: info.email,
+            role: m.role as string,
+            km_this_month: myTrips.reduce((s, tr) => s + (tr.distance_km ?? 0), 0),
+            trip_count: myTrips.length,
+            untagged_count: myTrips.filter((tr) => !tr.tag || tr.tag === "untagged").length,
+            last_trip_at: lastTrip?.started_at ?? null,
+          };
+        });
+        driverStats.sort((a, b) => b.km_this_month - a.km_this_month);
+        setDrivers(driverStats);
+
+        // Org vehicles with telemetry
+        const rawVehicles = vehiclesRes.data ?? [];
+        setVehicleCount(rawVehicles.length);
+
+        if (rawVehicles.length > 0) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const vehicleIds = rawVehicles.map((ov: any) => ov.vehicle_id as string);
+          const { data: telCache } = await supabase
+            .from("vehicle_telemetry_cache")
+            .select("vehicle_id, signal, value, received_at")
+            .in("vehicle_id", vehicleIds)
+            .in("signal", ["Soc", "BatteryLevel", "ChargeState"]);
+
+          const telMap = new Map<string, Record<string, unknown>>();
+          for (const row of (telCache ?? [])) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const r = row as any;
+            if (!telMap.has(r.vehicle_id)) telMap.set(r.vehicle_id, {});
+            telMap.get(r.vehicle_id)![r.signal] = r;
+          }
+
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const enriched: OrgVehicle[] = rawVehicles.map((ov: any) => {
+            const vId = ov.vehicle_id as string;
+            const tel = telMap.get(vId) ?? {};
+            const vInfo = ov.vehicles as Record<string, unknown> | null;
+            const socRow = (tel["Soc"] ?? tel["BatteryLevel"]) as Record<string, unknown> | undefined;
+            const chargeRow = tel["ChargeState"] as Record<string, unknown> | undefined;
+            return {
+              ov_id: ov.id as string,
+              vehicle_id: vId,
+              display_label: ov.display_label as string | null,
+              model: vInfo?.["model"] as string | null,
+              vin: vInfo?.["vin"] as string | null,
+              battery_kwh_usable: vInfo?.["battery_kwh_usable"] as number | null,
+              telemetry_enabled: (vInfo?.["telemetry_enabled"] as boolean) ?? false,
+              soc: socRow ? signalNum(socRow["value"]) : null,
+              charge_state: chargeRow ? signalStr(chargeRow["value"]) : null,
+              last_seen: socRow ? (socRow["received_at"] as string | null) : null,
+            };
+          });
+          setOrgVehicles(enriched);
+        }
+
         setLoading(false);
-      }
-    });
+      });
   }, [user, organization]);
 
-  const lastTripEnd = useMemo((): { lat: number; lng: number } | null => {
-    for (const tr of recentTrips) {
-      if (tr.end_lat != null && tr.end_lng != null) return { lat: tr.end_lat, lng: tr.end_lng };
-    }
-    return null;
-  }, [recentTrips]);
-
-  const untaggedCount = useMemo(
-    () => trips.filter(tr => !tr.tag || tr.tag === "untagged").length,
-    [trips],
-  );
+  const fleetKm = useMemo(() => allTrips.reduce((s, tr) => s + (tr.distance_km ?? 0), 0), [allTrips]);
+  const untaggedCount = useMemo(() => allTrips.filter((tr) => !tr.tag || tr.tag === "untagged").length, [allTrips]);
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "God morgon" : hour < 18 ? "God eftermiddag" : "God kväll";
 
-  // No organization — show onboarding welcome
-  if (!orgLoading && !organization) {
-    return <WelcomeOnboarding />;
-  }
+  if (!orgLoading && !organization) return <WelcomeOnboarding />;
 
   return (
     <div className="space-y-6">
-      {/* Getting-started checklist for new orgs */}
+      {/* Onboarding checklist */}
       <GettingStartedBanner driverCount={driverCount} vehicleCount={vehicleCount} />
 
       {/* Page header */}
@@ -851,49 +820,54 @@ export function DashboardPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">{greeting}!</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            {t("dashboard.thisMonth")} · {new Date().toLocaleDateString("sv-SE", { month: "long", year: "numeric" })}
+            {organization?.name} · {new Date().toLocaleDateString("sv-SE", { month: "long", year: "numeric" })}
           </p>
         </div>
         {!loading && untaggedCount > 0 && (
-          <button
-            onClick={() => window.location.assign("/personal")}
-            className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 hover:bg-amber-100 transition-colors cursor-pointer"
-          >
+          <a href="/dashboard/compliance" className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 hover:bg-amber-100 transition-colors cursor-pointer">
             <IconTag className="size-3.5 text-amber-600 shrink-0" />
             <p className="text-xs text-amber-700 font-medium">
-              {untaggedCount} {t("dashboard.untaggedAlert")} — {t("dashboard.seeAll")}
+              {untaggedCount} {t("dashboard.untaggedAlert")} &mdash; {t("dashboard.seeAll")}
             </p>
-          </button>
+          </a>
         )}
       </div>
 
-      {/* KPI cards */}
-      <KpiSectionCards trips={trips} loading={loading} />
+      {/* Quick actions */}
+      <QuickActionsBar />
 
-      {/* Activity chart full width */}
-      <ActivityChart trips={trips} loading={loading} />
+      {/* Fleet KPI cards */}
+      <FleetKpiCards
+        driverCount={driverCount}
+        vehicleCount={vehicleCount}
+        fleetKm={fleetKm}
+        tripCount={allTrips.length}
+        untaggedCount={untaggedCount}
+        loading={loading}
+      />
 
-      {/* Middle row: recent trips + vehicle status */}
-      <div className="grid gap-4 lg:grid-cols-5">
-        {/* Recent trips (3/5) */}
-        <div className="lg:col-span-3">
-          <RecentTripsCard trips={recentTrips} loading={loading} />
+      {/* Activity chart + alerts */}
+      <div className="grid gap-4 lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          <FleetActivityChart trips={allTrips} loading={loading} />
         </div>
-        {/* Vehicle status (2/5) */}
-        <div className="lg:col-span-2 flex flex-col gap-4">
-          <VehicleStatusCard
-            vehicle={vehicle}
-            telemetry={telemetry}
-            lastTripEnd={lastTripEnd}
-            loading={loading}
-          />
-          <BatteryHealthCard
-            vehicle={vehicle}
-            snapshots={snapshots}
-            loading={loading}
-          />
+        <div>
+          <AlertsPanel drivers={drivers} vehicles={orgVehicles} loading={loading} />
         </div>
       </div>
+
+      {/* Driver table + Vehicle grid */}
+      <div className="grid gap-4 lg:grid-cols-5">
+        <div className="lg:col-span-3">
+          <DriverTable drivers={drivers} loading={loading} />
+        </div>
+        <div className="lg:col-span-2">
+          <VehicleGrid vehicles={orgVehicles} loading={loading} />
+        </div>
+      </div>
+
+      {/* Recent fleet trips */}
+      <RecentFleetTrips trips={fleetTrips} loading={loading} />
     </div>
   );
 }

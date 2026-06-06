@@ -200,8 +200,8 @@ export type EfficiencyStats = {
   totalKwh: number;
   totalKm: number;
   tripCount: number;
-  wltpSpec: number;
-  vsSpec: number;
+  wltpSpec: number | null;
+  vsSpec: number | null;
 };
 
 export type ChargingSessionRow = {
@@ -233,19 +233,20 @@ export type ChargingStats = {
 
 /**
  * Derive WLTP efficiency (kWh/100km) from the vehicle DB row.
- * Works for any BEV with battery_kwh_usable + battery_range_km_wltp.
- * Falls back to the median across all supported models.
+ * Returns null when battery_kwh_usable or battery_range_km_wltp is missing
+ * — callers must render "—" or hide WLTP comparisons. We deliberately do NOT
+ * fall back to a constant: a wrong baseline misleads the user.
  */
 export function computeWltpEfficiency(
   vehicle: { battery_kwh_usable: number | null; battery_range_km_wltp: number | null } | null,
-): number {
+): number | null {
   if (
     vehicle?.battery_kwh_usable != null && vehicle.battery_kwh_usable > 0 &&
     vehicle?.battery_range_km_wltp != null && vehicle.battery_range_km_wltp > 0
   ) {
     return (vehicle.battery_kwh_usable / vehicle.battery_range_km_wltp) * 100;
   }
-  return DEFAULT_WLTP_KWH_PER_100KM;
+  return null;
 }
 
 // ── Main aggregation ─────────────────────────────────────────────────────────
@@ -350,7 +351,7 @@ export function aggregateStats(
 
 // ── Efficiency detail ────────────────────────────────────────────────────────
 
-export function computeEfficiencyStats(trips: StatTripRow[], wltpSpec: number): EfficiencyStats | null {
+export function computeEfficiencyStats(trips: StatTripRow[], wltpSpec: number | null): EfficiencyStats | null {
   const valid = trips.filter(
     t => t.distance_km != null && t.distance_km > 1 && t.energy_used_kwh != null && t.energy_used_kwh > 0,
   );
@@ -385,7 +386,7 @@ export function computeEfficiencyStats(trips: StatTripRow[], wltpSpec: number): 
     avgKwhPer100, bestKwhPer100: best.kwhPer100, worstKwhPer100: worst.kwhPer100,
     avgSocDelta, avgCostPerKm,
     totalKwh, totalKm, tripCount: valid.length,
-    wltpSpec, vsSpec: avgKwhPer100 - wltpSpec,
+    wltpSpec, vsSpec: wltpSpec != null ? avgKwhPer100 - wltpSpec : null,
   };
 }
 

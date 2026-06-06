@@ -15,7 +15,7 @@ export function AuthLayout() {
   }
 
   if (user) {
-    const mode = sessionStorage.getItem("millog-login-mode");
+    const mode = localStorage.getItem("millog-login-mode");
     const target = mode === "personal" ? "/personal" : "/dashboard";
     return <Navigate to={target} replace />;
   }

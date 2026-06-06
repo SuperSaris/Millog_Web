@@ -396,3 +396,25 @@ To prevent scope creep, these are explicitly other systems' responsibilities:
 | Billing integration | Billing card says "Kommer snart" |
 | Compliance reminders | No email sending capability yet |
 | Report PDF generation | Edge Function scaffold only |
+
+---
+
+## Pending Migrations
+
+These SQL files are in `docs/pending-migrations/` and must be deployed before their features are used.
+
+| File | Purpose | Production safety |
+| ---- | ------- | ----------------- |
+| `002-fleet-schema-fixes.sql` | RLS privilege escalation fix, last-admin protection, cross-org assignment constraint, 9 performance indexes, audit columns, `organization_invitations` table | Fleet tables only — no shared table columns touched |
+| `003-trips-fleet-columns.sql` | Adds `driver_id` and `organization_id` to `trips` table for fleet reporting | Purely additive: nullable columns, auto-populate trigger on INSERT only, no NOT NULL constraints |
+
+**Deployment order:** 002 then 003. Both are idempotent (`IF NOT EXISTS` / `IF EXISTS` throughout).
+
+### Security Fixes Applied (in edge functions)
+
+| Function | Fix | Issue |
+| -------- | --- | ----- |
+| `fleet-create-org` | Rollback org if member INSERT fails; org_number + billing_email validation | Orphaned orgs on partial failure |
+| `fleet-delete-org` | Explicit `organization_id` in body (fixes `.single()` for multi-org); sequential Tesla offboard (rate limits); sanitized error responses; 60s timeout | Multi-org user crash, rate limit storms, DB info leak |
+| `fleet-invite-driver` | Email format validation; duplicate member check (409); `invited_by` audit; replaced `listUsers()` O(n) scan with targeted lookup | Loads all auth users into memory, no duplicate guard |
+| `fleet-generate-report` | Date format + range validation; format enum validation; 1-year cap | No input validation on scaffold |
